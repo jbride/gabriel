@@ -1,12 +1,14 @@
 use std::{
-    fs::OpenOptions,
-    io::{Seek, Write},
+    fs::{OpenOptions, File},
+    io::{Read, Seek, Write},
     path::PathBuf,
 };
 
 use anyhow::{Ok, Result};
-use block::{process_block_file, process_blocks_in_parallel, Record};
-use clap::{Parser, Subcommand}; // Updated import
+use block::{process_block, process_block_file, process_blocks_in_parallel, Record};
+use clap::{Parser, Subcommand};
+use nom::AsBytes;
+use zeromq::{Socket, SocketRecv};
 
 mod block;
 mod tx;
@@ -26,6 +28,7 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     BlockFileEval(BlockFileEvalArgs),
+    BlockAsyncEval(BlockAsyncEvalArgs),
     Index(IndexArgs),
     Graph(GraphArgs),
 }
@@ -35,6 +38,17 @@ struct BlockFileEvalArgs {
     /// Bitcoin directory path
     #[arg(short, long)]
     block_file_absolute_path: PathBuf,
+
+    /// CSV output file path
+    #[arg(short, long)]
+    output: PathBuf,
+}
+
+#[derive(Parser, Debug)]
+struct BlockAsyncEvalArgs {
+    /// zmqpubrawblock  socket URL
+    #[arg(short, long)]
+    zmqpubrawblock_socket_url: String,
 
     /// CSV output file path
     #[arg(short, long)]
@@ -57,17 +71,38 @@ struct GraphArgs {
     // Add arguments for the graph command if needed
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
         Commands::BlockFileEval(args) => run_block_file_eval(args),
         Commands::Index(args) => run_index(args),
         Commands::Graph(args) => run_graph(args),
+        Commands::BlockAsyncEval(args) => run_async_block_eval_listener(args).await
     }
 }
 
+fn append_to_output(mut file: &File, result_map: &ResultMap) -> Result<()> {
+    let result_map_read = result_map.read().unwrap();
+    for (_key, record) in result_map_read.iter() {
+        // write a record to the file
+        let mut p2pk_addresses = &record.p2pk_addresses_added;
+        let binding = p2pk_addresses - &record.p2pk_addresses_spent;
+        p2pk_addresses = &binding;
+        let mut p2pk_coins = record.p2pk_sats_added.to_owned() as f64 / 100_000_000.0;
+        p2pk_coins -= record.p2pk_sats_spent.to_owned() as f64 / 100_000_000.0;
+        let date = &record.date;
+        let output_line = format!("0,{date},{p2pk_addresses},{p2pk_coins}");
+        writeln!(file, "{}", output_line)?;
+    }
+    Ok(())
+
+}
+
 fn run_block_file_eval(args: &BlockFileEvalArgs) -> Result<()> {
+
+
     // Maps previous block hash to next merkle root
     let header_map: HeaderMap = Default::default();
 
@@ -107,20 +142,58 @@ fn run_block_file_eval(args: &BlockFileEvalArgs) -> Result<()> {
     file.set_len(0)?; // Truncate the file
     file.write_all(HEADER.as_bytes())?;
 
-    let result_map_read = result_map.read().unwrap();
-    for (_key, record) in result_map_read.iter() {
-        // write a record to the file
-        let mut p2pk_addresses = &record.p2pk_addresses_added;
-        let binding = p2pk_addresses - &record.p2pk_addresses_spent;
-        p2pk_addresses = &binding;
-        let mut p2pk_coins = record.p2pk_sats_added.to_owned() as f64 / 100_000_000.0;
-        p2pk_coins -= record.p2pk_sats_spent.to_owned() as f64 / 100_000_000.0;
-        let date = &record.date;
-        let output_line = format!("0,{date},{p2pk_addresses},{p2pk_coins}");
-        writeln!(file, "{}", output_line)?;
-    }
+    append_to_output(&file, &result_map);
 
     Ok(())
+}
+
+async fn run_async_block_eval_listener(args: &BlockAsyncEvalArgs) -> Result<()> {
+
+    println!(
+        "zmqpubrawblock_socket_url: {} ;  output file = {}",
+        &args.zmqpubrawblock_socket_url,
+        &args.output.display()
+    );
+
+    // Maps previous block hash to next merkle root
+    let header_map: HeaderMap = Default::default();
+    // Maps txid to tx value
+    let tx_map: TxMap = Default::default();
+
+    // Maps header hash to result Record
+    let result_map: ResultMap = Default::default();
+    let pb = ProgressBar::new(1);
+
+    let mut socket = zeromq::SubSocket::new();
+    socket
+        .connect(&args.zmqpubrawblock_socket_url)
+        .await
+        .expect(&format!("Failed to connect: {}", &args.zmqpubrawblock_socket_url));
+
+    socket.subscribe("").await?;
+
+    // prep output file
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&args.output)?;
+
+    loop {
+        let zmq_message = socket.recv().await?;
+        
+        let second_element = zmq_message.get(1);
+        match second_element {
+            Some(block_bytes) => {
+                let u8_byte_array = block_bytes.as_bytes();
+                let tx_count = process_block(u8_byte_array, &pb, &result_map, &tx_map, &header_map, false);
+                println!("received block! byte length: {}; tx_count: {}", u8_byte_array.len(), tx_count);
+                let _ = append_to_output(&file, &result_map);
+            }
+            None => panic!("second element from zeromq raw block is non-existent!")
+        }
+    }
 }
 
 fn run_index(args: &IndexArgs) -> Result<()> {

@@ -422,12 +422,19 @@ fn parse_block_with_magic(input: &[u8]) -> IResult<&[u8], BitcoinBlock> {
 }
 
 /// Parse the entire blkxxxx.dat file, returning a list of blocks and any remaining input
-fn parse_blk_file(input: &[u8]) -> IResult<&[u8], Vec<BitcoinBlock>> {
+fn parse_blk_file(input: &[u8], use_magic: bool) -> IResult<&[u8], Vec<BitcoinBlock>> {
     let mut blocks = Vec::new();
     let mut remaining_input = input;
 
     while !remaining_input.is_empty() {
-        match parse_block_with_magic(remaining_input) {
+        let mut _block_result: IResult<&[u8], BitcoinBlock>;
+        if use_magic {
+            _block_result = parse_block_with_magic(remaining_input);
+        }else {
+            _block_result = parse_block(remaining_input);
+        }
+        
+        match _block_result {
             Ok((remaining, block)) => {
                 blocks.push(block);
                 remaining_input = remaining;
@@ -456,16 +463,17 @@ fn is_p2pk(script: &[u8]) -> bool {
 }
 
 /// Process a single block from the input data
-fn process_block(
+pub fn process_block(
     input: &[u8],
     pb: &ProgressBar,
     result_map: &ResultMap,
     tx_map: &TxMap,
     header_map: &HeaderMap,
+    use_magic: bool
 ) -> usize {
     let mut blocks_processed = 0;
 
-    match parse_blk_file(input) {
+    match parse_blk_file(input, use_magic) {
         Ok((_, blocks)) => {
             for block in blocks {
                 let block_hash = compute_block_hash(&block.header);
@@ -556,7 +564,7 @@ pub fn process_block_file(
     file.read_to_end(&mut buffer)
         .expect("Failed to read block file");
     // Process the blk file containing multiple blocks
-    process_block(&buffer, pb, result_map, tx_map, header_map)
+    process_block(&buffer, pb, result_map, tx_map, header_map, true)
 }
 
 /// Iterate through the blocks directory and process each blkxxxxx.dat file in parallel

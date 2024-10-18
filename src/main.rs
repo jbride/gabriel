@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{Ok, Result};
+use bitcoin::{PublicKey, ScriptBuf};
 use block::{process_block, process_block_file, process_blocks_in_parallel, Record};
 use clap::{Parser, Subcommand};
 use nom::AsBytes;
@@ -31,7 +32,16 @@ enum Commands {
     BlockAsyncEval(BlockAsyncEvalArgs),
     Index(IndexArgs),
     Graph(GraphArgs),
+    GenerateScriptPubKeyFromPubKey(GenerateScriptPubKeyFromPubKeyArgs),
 }
+
+#[derive(Parser, Debug)]
+struct GenerateScriptPubKeyFromPubKeyArgs {
+    #[arg(short, long)]
+    pub_key: String
+}
+
+
 
 #[derive(Parser, Debug)]
 struct BlockFileEvalArgs {
@@ -79,8 +89,17 @@ async fn main() -> Result<()> {
         Commands::BlockFileEval(args) => run_block_file_eval(args),
         Commands::Index(args) => run_index(args),
         Commands::Graph(args) => run_graph(args),
+        Commands::GenerateScriptPubKeyFromPubKey(args) => generate_script_pub_key_from_pub_key(args),
         Commands::BlockAsyncEval(args) => run_async_block_eval_listener(args).await
     }
+}
+
+fn generate_script_pub_key_from_pub_key(args: &GenerateScriptPubKeyFromPubKeyArgs) -> Result<()> {
+    let pub_key_string = &args.pub_key;
+    let pubkey = pub_key_string.parse::<PublicKey>().unwrap();
+    let p2pk = ScriptBuf::new_p2pk(&pubkey);
+    println!("{}", p2pk.to_hex_string());
+    Ok(())
 }
 
 fn append_to_output(mut file: &File, result_map: &ResultMap) -> Result<()> {

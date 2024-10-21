@@ -1,21 +1,23 @@
 use std::{
-    fs::{OpenOptions, File},
+    fs::{File, OpenOptions},
     io::{Read, Seek, Write},
-    path::PathBuf,
+    path::PathBuf, str::FromStr,
 };
 
 use anyhow::{Ok, Result};
-use bitcoin::{PublicKey, ScriptBuf};
+use bitcoin::{Amount, PublicKey, ScriptBuf};
 use block::{process_block, process_block_file, process_blocks_in_parallel, Record};
 use clap::{Parser, Subcommand};
 use nom::AsBytes;
 use zeromq::{Socket, SocketRecv};
 
+mod p2pktrnx;
 mod block;
 mod tx;
 
 use block::{HeaderMap, ResultMap, TxMap};
 use indicatif::ProgressBar;
+use p2pktrnx::BitcoindRpcInfo;
 
 const HEADER: &str = "Height,Date,Total P2PK addresses,Total P2PK coins\n";
 
@@ -32,16 +34,23 @@ enum Commands {
     BlockAsyncEval(BlockAsyncEvalArgs),
     Index(IndexArgs),
     Graph(GraphArgs),
-    GenerateScriptPubKeyFromPubKey(GenerateScriptPubKeyFromPubKeyArgs),
+    GenerateP2PKTrnx(GenerateP2PKTrnxArgs),
 }
 
 #[derive(Parser, Debug)]
-struct GenerateScriptPubKeyFromPubKeyArgs {
-    #[arg(short, long)]
-    pub_key: String
+struct GenerateP2PKTrnxArgs {
+    
+    #[arg(long, default_value="http://127.0.0.1:18443")]
+    rpc_url: String,
+    #[arg(long, default_value="regtest")]
+    rpc_user_id: String,
+    #[arg(long, default_value="regtest")]
+    rpc_password: String,
+    #[arg(short, long, default_value="1.0 BTC")]
+    output_amount_btc: String,
+    #[arg(short, long, default_value="changeme")]
+    extended_master_private_key: String
 }
-
-
 
 #[derive(Parser, Debug)]
 struct BlockFileEvalArgs {
@@ -85,21 +94,31 @@ struct GraphArgs {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+
     match &cli.command {
         Commands::BlockFileEval(args) => run_block_file_eval(args),
         Commands::Index(args) => run_index(args),
         Commands::Graph(args) => run_graph(args),
-        Commands::GenerateScriptPubKeyFromPubKey(args) => generate_script_pub_key_from_pub_key(args),
+        Commands::GenerateP2PKTrnx(args) => generate_p2pk_trnx(args),
         Commands::BlockAsyncEval(args) => run_async_block_eval_listener(args).await
     }
 }
 
-fn generate_script_pub_key_from_pub_key(args: &GenerateScriptPubKeyFromPubKeyArgs) -> Result<()> {
-    let pub_key_string = &args.pub_key;
-    let pubkey = pub_key_string.parse::<PublicKey>().unwrap();
-    let p2pk = ScriptBuf::new_p2pk(&pubkey);
-    println!("{}", p2pk.to_hex_string());
-    Ok(())
+fn generate_p2pk_trnx(args: &GenerateP2PKTrnxArgs) -> Result<()> {
+
+    let rpc_info = BitcoindRpcInfo{
+        rpc_url: args.rpc_url.clone(),
+        rpc_user_id: args.rpc_user_id.clone(),
+        rpc_password: args.rpc_password.clone(),
+    };
+
+    let to_amount = Amount::from_str(&args.output_amount_btc)?;
+    let e_master_key = "tprv8ZgxMBicQKsPdvbo9jfEM6484s6KHpfX27HwiU6YriRAwxDYWRnNCEooQqveWQ4mBkicD2SFthXXUL4pB3vV9cpRfYidKU1LE1LHLXQDECQ";
+    p2pktrnx::generate_p2pk_trnx(
+        e_master_key,
+        to_amount,
+        rpc_info
+    )
 }
 
 fn append_to_output(mut file: &File, result_map: &ResultMap) -> Result<()> {
@@ -198,6 +217,7 @@ async fn run_async_block_eval_listener(args: &BlockAsyncEvalArgs) -> Result<()> 
         .create(true)
         .truncate(false)
         .open(&args.output)?;
+    file.seek(std::io::SeekFrom::End(0))?;
 
     loop {
         let zmq_message = socket.recv().await?;

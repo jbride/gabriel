@@ -11,13 +11,13 @@ use clap::{Parser, Subcommand};
 use nom::AsBytes;
 use zeromq::{Socket, SocketRecv};
 
-mod p2pktrnx;
+mod p2pktx;
 mod block;
 mod tx;
 
 use block::{HeaderMap, ResultMap, TxMap};
 use indicatif::ProgressBar;
-use p2pktrnx::BitcoindRpcInfo;
+use p2pktx::BitcoindRpcInfo;
 
 const HEADER: &str = "Height,Date,Total P2PK addresses,Total P2PK coins\n";
 
@@ -34,11 +34,11 @@ enum Commands {
     BlockAsyncEval(BlockAsyncEvalArgs),
     Index(IndexArgs),
     Graph(GraphArgs),
-    GenerateP2PKTrnx(GenerateP2PKTrnxArgs),
+    GenerateP2PKTx(GenerateP2PKTxArgs),
 }
 
 #[derive(Parser, Debug)]
-struct GenerateP2PKTrnxArgs {
+struct GenerateP2PKTxArgs {
     
     #[arg(long, default_value="http://127.0.0.1:18443")]
     rpc_url: String,
@@ -48,7 +48,7 @@ struct GenerateP2PKTrnxArgs {
     rpc_password: String,
     #[arg(short, long, default_value="1.0 BTC")]
     output_amount_btc: String,
-    #[arg(short, long, default_value="changeme")]
+    #[arg(short, long)]
     extended_master_private_key: String
 }
 
@@ -99,12 +99,12 @@ async fn main() -> Result<()> {
         Commands::BlockFileEval(args) => run_block_file_eval(args),
         Commands::Index(args) => run_index(args),
         Commands::Graph(args) => run_graph(args),
-        Commands::GenerateP2PKTrnx(args) => generate_p2pk_trnx(args),
+        Commands::GenerateP2PKTx(args) => generate_p2pk_tx(args),
         Commands::BlockAsyncEval(args) => run_async_block_eval_listener(args).await
     }
 }
 
-fn generate_p2pk_trnx(args: &GenerateP2PKTrnxArgs) -> Result<()> {
+fn generate_p2pk_tx(args: &GenerateP2PKTxArgs) -> Result<()> {
 
     let rpc_info = BitcoindRpcInfo{
         rpc_url: args.rpc_url.clone(),
@@ -113,8 +113,8 @@ fn generate_p2pk_trnx(args: &GenerateP2PKTrnxArgs) -> Result<()> {
     };
 
     let to_amount = Amount::from_str(&args.output_amount_btc)?;
-    let e_master_key = "tprv8ZgxMBicQKsPdvbo9jfEM6484s6KHpfX27HwiU6YriRAwxDYWRnNCEooQqveWQ4mBkicD2SFthXXUL4pB3vV9cpRfYidKU1LE1LHLXQDECQ";
-    p2pktrnx::generate_p2pk_trnx(
+    let e_master_key = &args.extended_master_private_key;
+    p2pktx::generate_p2pk_tx(
         e_master_key,
         to_amount,
         rpc_info

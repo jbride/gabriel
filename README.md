@@ -7,16 +7,16 @@ gabriel
     - [2.1.2. Software](#212-software)
       - [2.1.2.1. Rust](#2121-rust)
       - [2.1.2.2. bitcoind](#2122-bitcoind)
-  - [2.2. Clone code](#22-clone-code)
+  - [2.2. Clone](#22-clone)
   - [2.3. Build](#23-build)
   - [2.4. Execute tests](#24-execute-tests)
 - [3. Run Gabriel](#3-run-gabriel)
-  - [3.1. analyze single block data file](#31-analyze-single-block-data-file)
   - [3.2. analyze all block data files](#32-analyze-all-block-data-files)
-  - [3.3. consume and analyze new raw blocks](#33-consume-and-analyze-new-raw-blocks)
-    - [3.3.1. Fund a trnx w/ a P2PK output on reg-test](#331-fund-a-trnx-w-a-p2pk-output-on-reg-test)
+  - [3.1. analyze single block data file](#31-analyze-single-block-data-file)
+    - [Optional:  debug via VSCode:](#optional--debug-via-vscode)
+  - [3.3. consume and analyze new raw block events](#33-consume-and-analyze-new-raw-block-events)
+    - [3.3.1. Fund a tx w/ a P2PK output on reg-test](#331-fund-a-tx-w-a-p2pk-output-on-reg-test)
     - [3.3.2. Generate block:](#332-generate-block)
-    - [3.3.3. Test](#333-test)
 - [4. Debug in VSCode:](#4-debug-in-vscode)
 
 
@@ -65,7 +65,7 @@ If on bitcoind v28.0, ensure the following flag is set prior to initial block do
 
                 $ `b-reg generatetoaddress 110 $(b-reg getnewaddress)`
 
-### 2.2. Clone code
+### 2.2. Clone
 
 ```
 $ git clone https://github.com/SurmountSystems/gabriel.git
@@ -91,7 +91,19 @@ $ cargo test
 
 ## 3. Run Gabriel
 
+### 3.2. analyze all block data files
+
+Execute the following if analyzing the entire (previously downloaded) Bitcoin blockchain:
+
+        $ export BITCOIND_DATA_DIR=/path/to/bitcoind/data/dir
+        $ ./target/debug/gabriel index \
+            --input $BITCOIND_DATA_DIR/blocks \
+            --output /tmp/gabriel-testnet4.csv
+
 ### 3.1. analyze single block data file
+
+Alternatively, you can have (likely for testing purposes) Gabriel analyze a single Bitcoin Core block data file.
+Execute as follows:
 
         $ export BITCOIND_DATA_DIR=/path/to/bitcoind/data/dir
         $ export BITCOIND_BLOCK_DATA_FILE=xxx.dat
@@ -100,65 +112,80 @@ $ cargo test
             -b $BITCOIND_DATA_DIR/blocks/$BITCOIND_BLOCK_DATA_FILE \
             -o /tmp/$BITCOIND_BLOCK_DATA_FILE.csv
 
+#### Optional:  debug via VSCode:
 
-### 3.2. analyze all block data files
+Modify the following as appropriate and add to your vscode `launch.json`:
+        
+        {
+          "version": "0.2.0",
+          "configurations": [
+            {
+                "type": "lldb",
+                "request": "launch",
+                "name": "gabriel local: 'block-file-eval'",
+                "args": ["block-file-eval", "-b=/tmp/<changeme>.dat", "-o=/tmp/<changeme>.dat.csv"],
+                "cwd": "${workspaceFolder}",
+                "program": "./target/debug/gabriel",
+                "sourceLanguages": ["rust"]
+            }
+          ]
+        }
 
-        $ export BITCOIND_DATA_DIR=/path/to/bitcoind/data/dir
-        $ ./target/debug/gabriel index \
-            --input $BITCOIND_DATA_DIR/blocks \
-            --output /tmp/gabriel-testnet4.csv
-
-### 3.3. consume and analyze new raw blocks
+### 3.3. consume and analyze new raw block events
 
         $ ./target/debug/gabriel block-async-eval \
             --zmqpubrawblock-socket-url tcp://127.0.0.1:29001 \
             --output /tmp/async_blocks.txt
 
-#### 3.3.1. Fund a trnx w/ a P2PK output on reg-test
+#### 3.3.1. Fund a tx w/ a P2PK output on reg-test
 
-1. Get extended private key:
+If interested in testing Gabriel's ability to consume and process a block with a P2PK utxo, you can use the following in a new terminal:
 
-        $ export W_NAME=lightning && export WPASS=lightning
-        $ b-reg -rpcwallet=$W_NAME walletpassphrase $WPASS 120
-        $ XPRV=$( b-reg gethdkeys '{"active_only":true, "private":true}' | jq -r .[].xprv ) && echo $XPRV
-
-2. Create a trnx w/ P2PK output:
+1. Get extended private key from bitcoind:\
    
-        $ export RUST_BACKTRACE=1
-        $ SIGNED_P2PK_RAW_TRNX=$( ./target/debug/gabriel generate-p2pk-trnx )
+   NOTE:  for the following command, you'll already need to have unlocked your wallet via the bitcoin cli.
 
-3.  Send trnx:
+        $ XPRV=$( b-reg gethdkeys '{"active_only":true, "private":true}' \
+        | jq -r .[].xprv ) && echo $XPRV
 
-        $ b-reg sendrawtransaction $SIGNED_P2PK_RAW_TRNX
+2. Create a tx w/ P2PK output:
+   
+        $ SIGNED_P2PK_RAW_TX=$( ./target/debug/gabriel \
+                generate-p2pk-tx \
+                -e $XPRV ) \
+                && echo $SIGNED_P2PK_RAW_TX
+
+3. View decoded tx:
+   
+        $ b-reg decoderawtransaction $SIGNED_P2PK_RAW_TX
+
+4.  Send tx:
+
+        $ b-reg sendrawtransaction $SIGNED_P2PK_RAW_TX
 
 #### 3.3.2. Generate block:
     
         $ b-reg -generate 1
    
+        NOTE:  You should now see a new record in Gabriel's output file indicating the new P2PK utxo.
 
-
-#### 3.3.3. Test
-
-TO-DO:  generate a test P2PK address and send block rewards
 
 ## 4. Debug in VSCode:
 
 Add and edit the following to $PROJECT_HOME/.vscode/launch.json:
 
-`````
-{
-    "version": "0.2.0",
-    "configurations": [
         {
-            "type": "lldb",
-            "request": "launch",
-            "name": "gabriel local: 'block-file-eval'",
-            "args": ["block-file-eval", "-b=/u04/bitcoin/datadir/blocks/blk00000.dat", "-o=/tmp/blk00000.dat.csv"],
-            "cwd": "${workspaceFolder}",
-            "program": "./target/debug/gabriel",
-            "sourceLanguages": ["rust"]
+          "version": "0.2.0",
+          "configurations": [
+            {
+                "type": "lldb",
+                "request": "launch",
+                "name": "gabriel local: 'generate-p2pk-trnx'",
+                "args": ["generate-p2pk-trnx", "-e=$XPRV-CHANGEME"],
+                "cwd": "${workspaceFolder}",
+                "program": "./target/debug/gabriel",
+                "sourceLanguages": ["rust"]
+            }
+          ]
         }
-    ]
-}
-`````
 

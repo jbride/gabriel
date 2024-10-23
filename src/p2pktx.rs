@@ -7,10 +7,10 @@
 //!
 
 use std::collections::BTreeMap;
-use std::fmt;
+use std::{env, fmt};
 use std::str::FromStr;
 
-use anyhow::{Ok, Result, anyhow};
+use anyhow::{Result, anyhow};
 
 use bitcoin::bip32::{self, ChildNumber, DerivationPath, Fingerprint, IntoDerivationPath, Xpriv, Xpub};
 use bitcoin::consensus::encode;
@@ -30,24 +30,70 @@ const INPUT_UTXO_VOUT: u32 = 0;
 
 #[derive(Debug)]
 pub struct BitcoindRpcInfo {
-    pub rpc_url: String,
-    pub rpc_user_id: String,
-    pub rpc_password: String
+    rpc_client: Client
+}
+
+impl BitcoindRpcInfo {
+
+    pub fn new() -> Result<Self> {
+        let url = env::var("URL")?;
+        let cookie = env::var("COOKIE");
+        let auth = match cookie {
+            Ok(cookiefile) => Auth::CookieFile(cookiefile.into()),
+            Err(_) => {
+                let user = env::var("USER")?;
+                let pass = env::var("PASS")?;
+
+                Auth::UserPass(user, pass)
+            }
+        };
+        let rpc_client = Client::new(&url, auth)?;
+        Ok(BitcoindRpcInfo{rpc_client})
+    }
+
+    pub fn get_bitcoind_info(&self, output_amount_btc: f64) -> Result<(ListUnspentResultEntry, GetAddressInfoResult, Address, Amount)> {
+    
+        let network_relay_fee = self.rpc_client.get_network_info()?.relay_fee;
+        let output_tx_total = network_relay_fee.to_btc() + output_amount_btc;
+    
+        let mut unspent_option: Option<ListUnspentResultEntry> = None;
+        let unspent_vec = self.rpc_client.list_unspent(Some(0), None, None, None, None).unwrap();
+        for unspent_candidate in unspent_vec {
+            //println!("unspent_candidate txid={}, amount={}", unspent_candidate.txid, unspent_candidate.amount.to_btc());
+            if unspent_candidate.amount.to_btc()  > output_tx_total {
+                unspent_option = Some(unspent_candidate);
+                break;
+            }
+        }
+        if unspent_option == None {
+            return Err(anyhow!("No unspent txs have sufficient funds: {}", output_tx_total));
+        }
+    
+        let unspent_tx = unspent_option.unwrap();
+        let input_utxo_address = unspent_tx.address.clone().unwrap().assume_checked();
+    
+        let input_utxo_address_info = self.rpc_client.get_address_info(&input_utxo_address)?;
+    
+        let change_addr = self.rpc_client.get_raw_change_address(Some(json::AddressType::Bech32)).unwrap().assume_checked();
+    
+        Ok((unspent_tx, input_utxo_address_info, change_addr, network_relay_fee))
+    }
+
 }
 
 pub fn generate_p2pk_tx(
         extended_master_private_key: &str,
-        output_amount: Amount,
-        rpc_info: BitcoindRpcInfo,
+        output_amount: Amount
             ) -> Result<()> {
                 
     let secp = Secp256k1::new();
     let mut rng = rand::thread_rng();
     let (_, secp256k1_pubkey) = secp.generate_keypair(&mut rng);
     let p2pk_pubkey = PublicKey::new(secp256k1_pubkey);
-
     let output_amount_btc = output_amount.to_btc();
-    let results: (ListUnspentResultEntry, GetAddressInfoResult, Address, Amount) = get_bitcoind_info(output_amount_btc, rpc_info)?;
+
+    let bitcoind_info = BitcoindRpcInfo::new()?;
+    let results: (ListUnspentResultEntry, GetAddressInfoResult, Address, Amount) = bitcoind_info.get_bitcoind_info(output_amount_btc)?;
     let unspent_tx = results.0;
     let input_utxo_address = results.1;
     let change_addr = results.2;
@@ -81,38 +127,6 @@ pub fn generate_p2pk_tx(
     println!("{}", tx_hex);
 
     Ok(())
-}
-
-fn get_bitcoind_info(output_amount_btc: f64, rpc_info: BitcoindRpcInfo) -> Result<(ListUnspentResultEntry, GetAddressInfoResult, Address, Amount)> {
-    
-    let rpc = Client::new(&rpc_info.rpc_url,
-        Auth::UserPass(rpc_info.rpc_user_id.to_string(),
-        rpc_info.rpc_password.to_string())).unwrap();
-    
-    let network_relay_fee = rpc.get_network_info()?.relay_fee;
-    let output_tx_total = network_relay_fee.to_btc() + output_amount_btc;
-
-    let mut unspent_option: Option<ListUnspentResultEntry> = None;
-    let unspent_vec = rpc.list_unspent(Some(0), None, None, None, None).unwrap();
-    for unspent_candidate in unspent_vec {
-        //println!("unspent_candidate txid={}, amount={}", unspent_candidate.txid, unspent_candidate.amount.to_btc());
-        if unspent_candidate.amount.to_btc()  > output_tx_total {
-            unspent_option = Some(unspent_candidate);
-            break;
-        }
-    }
-    if unspent_option == None {
-        return Err(anyhow!("No unspent txs have sufficient funds: {}", output_tx_total));
-    }
-
-    let unspent_tx = unspent_option.unwrap();
-    let input_utxo_address = unspent_tx.address.clone().unwrap().assume_checked();
-
-    let input_utxo_address_info = rpc.get_address_info(&input_utxo_address)?;
-
-    let change_addr = rpc.get_raw_change_address(Some(json::AddressType::Bech32)).unwrap().assume_checked();
-
-    Ok((unspent_tx, input_utxo_address_info, change_addr, network_relay_fee))
 }
 
 // We cache the pubkeys for convenience because it requires a scep context to convert the private key.

@@ -150,6 +150,9 @@ If interested in testing Gabriel's ability to consume and process a block with a
 
 2. Create a tx w/ P2PK output:
    
+        $ export URL=http://127.0.0.1:18443 \
+            && export COOKIE=/path/to/bitcoind/datadir/regtest/.cookie
+   
         $ SIGNED_P2PK_RAW_TX=$( ./target/debug/gabriel \
                 generate-p2pk-tx \
                 -e $XPRV ) \

@@ -40,12 +40,6 @@ enum Commands {
 #[derive(Parser, Debug)]
 struct GenerateP2PKTxArgs {
     
-    #[arg(long, default_value="http://127.0.0.1:18443")]
-    rpc_url: String,
-    #[arg(long, default_value="regtest")]
-    rpc_user_id: String,
-    #[arg(long, default_value="regtest")]
-    rpc_password: String,
     #[arg(short, long, default_value="1.0 BTC")]
     output_amount_btc: String,
     #[arg(short, long)]
@@ -106,18 +100,11 @@ async fn main() -> Result<()> {
 
 fn generate_p2pk_tx(args: &GenerateP2PKTxArgs) -> Result<()> {
 
-    let rpc_info = BitcoindRpcInfo{
-        rpc_url: args.rpc_url.clone(),
-        rpc_user_id: args.rpc_user_id.clone(),
-        rpc_password: args.rpc_password.clone(),
-    };
-
     let to_amount = Amount::from_str(&args.output_amount_btc)?;
     let e_master_key = &args.extended_master_private_key;
     p2pktx::generate_p2pk_tx(
         e_master_key,
-        to_amount,
-        rpc_info
+        to_amount
     )
 }
 

@@ -57,9 +57,14 @@ impl BitcoindRpcInfo {
         let output_tx_total = network_relay_fee.to_btc() + output_amount_btc;
     
         let mut unspent_option: Option<ListUnspentResultEntry> = None;
-        let unspent_vec = self.rpc_client.list_unspent(Some(0), None, None, None, None).unwrap();
+        let unspent_vec = self.rpc_client.list_unspent(Some(3), None, None, None, None).unwrap();
         for unspent_candidate in unspent_vec {
-            //println!("unspent_candidate txid={}, amount={}", unspent_candidate.txid, unspent_candidate.amount.to_btc());
+            println!("unspent_candidate txid={}, vout={}, tx_amount={}, output_tx_total={}",
+                unspent_candidate.txid,
+                unspent_candidate.vout,
+                unspent_candidate.amount.to_btc(),
+                output_tx_total
+            );
             if unspent_candidate.amount.to_btc()  > output_tx_total {
                 unspent_option = Some(unspent_candidate);
                 break;
@@ -217,16 +222,21 @@ impl WatchOnly {
             change_address: Address,
             network_relay_fee: Amount) -> Result<Psbt> {
 
-        let output_change_total = input_utxo_value.to_btc() - network_relay_fee.to_btc() - output_amount_btc.to_btc();
-        let change_amount_rounded = (output_change_total * 1000000.0).round() / 1000000.0;
+        // network fee subtracted from payment total.  Similar to specifying "subtractFeeFromOutputs" argument with "fundrawtransaction" CLI
+        let payment_float = output_amount_btc.to_btc() - network_relay_fee.to_btc();
+        let payment_total = Amount::from_float_in(payment_float, bitcoin::Denomination::Bitcoin)?;
+
+
+        let change_float = input_utxo_value.to_btc() - output_amount_btc.to_btc();
+        let change_rounded = (change_float * 1000000.0).round() / 1000000.0;
 /*         println!("input_utxo_value={}, network_relay_fee={}, output_amount_btc={}, change_amount_rounded={}",
             input_utxo_value.to_btc(),
             network_relay_fee.to_btc(),
             output_amount_btc.to_btc(),
             change_amount_rounded
         ); */
-        let change_amount = Amount::from_float_in(change_amount_rounded, bitcoin::Denomination::Bitcoin)?;
-        //let change_amount: Amount = Amount::from_str("46.99999 BTC")?; // 1000 sat transaction fee.
+        let change_total = Amount::from_float_in(change_rounded, bitcoin::Denomination::Bitcoin)?;
+
 
         let p2pk_pubkey_scriptbuf = ScriptBuf::new_p2pk(&p2pk_pubkey);
 
@@ -240,8 +250,8 @@ impl WatchOnly {
                 witness: Witness::default(),
             }],
             output: vec![
-                TxOut { value: *output_amount_btc, script_pubkey: p2pk_pubkey_scriptbuf },
-                TxOut { value: change_amount, script_pubkey: change_address.script_pubkey() }
+                TxOut { value: payment_total, script_pubkey: p2pk_pubkey_scriptbuf },
+                TxOut { value: change_total, script_pubkey: change_address.script_pubkey() }
             ],
         };
 

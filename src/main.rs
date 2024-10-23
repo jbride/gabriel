@@ -1,7 +1,8 @@
 use std::{
     fs::{File, OpenOptions},
     io::{Read, Seek, Write},
-    path::PathBuf, str::FromStr,
+    path::PathBuf,
+    str::FromStr,
 };
 
 use anyhow::{Ok, Result};
@@ -11,8 +12,8 @@ use clap::{Parser, Subcommand};
 use nom::AsBytes;
 use zeromq::{Socket, SocketRecv};
 
-mod p2pktx;
 mod block;
+mod p2pktx;
 mod tx;
 
 use block::{HeaderMap, ResultMap, TxMap};
@@ -39,11 +40,10 @@ enum Commands {
 
 #[derive(Parser, Debug)]
 struct GenerateP2PKTxArgs {
-    
-    #[arg(short, long, default_value="1.0 BTC")]
+    #[arg(short, long, default_value = "1.0 BTC")]
     output_amount_btc: String,
     #[arg(short, long)]
-    extended_master_private_key: String
+    extended_master_private_key: String,
 }
 
 #[derive(Parser, Debug)]
@@ -88,24 +88,19 @@ struct GraphArgs {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-
     match &cli.command {
         Commands::BlockFileEval(args) => run_block_file_eval(args),
         Commands::Index(args) => run_index(args),
         Commands::Graph(args) => run_graph(args),
         Commands::GenerateP2PKTx(args) => generate_p2pk_tx(args),
-        Commands::BlockAsyncEval(args) => run_async_block_eval_listener(args).await
+        Commands::BlockAsyncEval(args) => run_async_block_eval_listener(args).await,
     }
 }
 
 fn generate_p2pk_tx(args: &GenerateP2PKTxArgs) -> Result<()> {
-
     let to_amount = Amount::from_str(&args.output_amount_btc)?;
     let e_master_key = &args.extended_master_private_key;
-    p2pktx::generate_p2pk_tx(
-        e_master_key,
-        to_amount
-    )
+    p2pktx::generate_p2pk_tx(e_master_key, to_amount)
 }
 
 fn append_to_output(mut file: &File, result_map: &ResultMap) -> Result<()> {
@@ -122,12 +117,9 @@ fn append_to_output(mut file: &File, result_map: &ResultMap) -> Result<()> {
         writeln!(file, "{}", output_line)?;
     }
     Ok(())
-
 }
 
 fn run_block_file_eval(args: &BlockFileEvalArgs) -> Result<()> {
-
-
     // Maps previous block hash to next merkle root
     let header_map: HeaderMap = Default::default();
 
@@ -173,7 +165,6 @@ fn run_block_file_eval(args: &BlockFileEvalArgs) -> Result<()> {
 }
 
 async fn run_async_block_eval_listener(args: &BlockAsyncEvalArgs) -> Result<()> {
-
     println!(
         "zmqpubrawblock_socket_url: {} ;  output file = {}",
         &args.zmqpubrawblock_socket_url,
@@ -193,7 +184,10 @@ async fn run_async_block_eval_listener(args: &BlockAsyncEvalArgs) -> Result<()> 
     socket
         .connect(&args.zmqpubrawblock_socket_url)
         .await
-        .expect(&format!("Failed to connect: {}", &args.zmqpubrawblock_socket_url));
+        .expect(&format!(
+            "Failed to connect: {}",
+            &args.zmqpubrawblock_socket_url
+        ));
 
     socket.subscribe("").await?;
 
@@ -208,16 +202,21 @@ async fn run_async_block_eval_listener(args: &BlockAsyncEvalArgs) -> Result<()> 
 
     loop {
         let zmq_message = socket.recv().await?;
-        
+
         let second_element = zmq_message.get(1);
         match second_element {
             Some(block_bytes) => {
                 let u8_byte_array = block_bytes.as_bytes();
-                let tx_count = process_block(u8_byte_array, &pb, &result_map, &tx_map, &header_map, false);
-                println!("received block! byte length: {}; tx_count: {}", u8_byte_array.len(), tx_count);
+                let tx_count =
+                    process_block(u8_byte_array, &pb, &result_map, &tx_map, &header_map, false);
+                println!(
+                    "received block! byte length: {}; tx_count: {}",
+                    u8_byte_array.len(),
+                    tx_count
+                );
                 let _ = append_to_output(&file, &result_map);
             }
-            None => panic!("second element from zeromq raw block is non-existent!")
+            None => panic!("second element from zeromq raw block is non-existent!"),
         }
     }
 }

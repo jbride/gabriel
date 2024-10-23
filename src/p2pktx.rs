@@ -7,19 +7,22 @@
 //!
 
 use std::collections::BTreeMap;
-use std::{env, fmt};
 use std::str::FromStr;
+use std::{env, fmt};
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 
-use bitcoin::bip32::{self, ChildNumber, DerivationPath, Fingerprint, IntoDerivationPath, Xpriv, Xpub};
+use bitcoin::bip32::{
+    self, ChildNumber, DerivationPath, Fingerprint, IntoDerivationPath, Xpriv, Xpub,
+};
 use bitcoin::consensus::encode;
 use bitcoin::key::rand;
 use bitcoin::locktime::absolute;
 use bitcoin::psbt::{self, Input, Psbt, PsbtSighashType};
 use bitcoin::secp256k1::{Secp256k1, Signing, Verification};
 use bitcoin::{
-    key, transaction, Address, Amount, CompressedPublicKey, Network, OutPoint, PrivateKey, PublicKey, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness
+    key, transaction, Address, Amount, CompressedPublicKey, Network, OutPoint, PrivateKey,
+    PublicKey, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness,
 };
 
 extern crate bitcoincore_rpc;
@@ -30,11 +33,10 @@ const INPUT_UTXO_VOUT: u32 = 0;
 
 #[derive(Debug)]
 pub struct BitcoindRpcInfo {
-    rpc_client: Client
+    rpc_client: Client,
 }
 
 impl BitcoindRpcInfo {
-
     pub fn new() -> Result<Self> {
         let url = env::var("URL")?;
         let cookie = env::var("COOKIE");
@@ -48,49 +50,67 @@ impl BitcoindRpcInfo {
             }
         };
         let rpc_client = Client::new(&url, auth)?;
-        Ok(BitcoindRpcInfo{rpc_client})
+        Ok(BitcoindRpcInfo { rpc_client })
     }
 
-    pub fn get_bitcoind_info(&self, output_amount_btc: f64) -> Result<(ListUnspentResultEntry, GetAddressInfoResult, Address, Amount)> {
-    
+    pub fn get_bitcoind_info(
+        &self,
+        output_amount_btc: f64,
+    ) -> Result<(
+        ListUnspentResultEntry,
+        GetAddressInfoResult,
+        Address,
+        Amount,
+    )> {
         let network_relay_fee = self.rpc_client.get_network_info()?.relay_fee;
         let output_tx_total = network_relay_fee.to_btc() + output_amount_btc;
-    
+
         let mut unspent_option: Option<ListUnspentResultEntry> = None;
-        let unspent_vec = self.rpc_client.list_unspent(Some(3), None, None, None, None).unwrap();
+        let unspent_vec = self
+            .rpc_client
+            .list_unspent(Some(3), None, None, None, None)
+            .unwrap();
         for unspent_candidate in unspent_vec {
-            println!("unspent_candidate txid={}, vout={}, tx_amount={}, output_tx_total={}",
+            println!(
+                "unspent_candidate txid={}, vout={}, tx_amount={}, output_tx_total={}",
                 unspent_candidate.txid,
                 unspent_candidate.vout,
                 unspent_candidate.amount.to_btc(),
                 output_tx_total
             );
-            if unspent_candidate.amount.to_btc()  > output_tx_total {
+            if unspent_candidate.amount.to_btc() > output_tx_total {
                 unspent_option = Some(unspent_candidate);
                 break;
             }
         }
         if unspent_option == None {
-            return Err(anyhow!("No unspent txs have sufficient funds: {}", output_tx_total));
+            return Err(anyhow!(
+                "No unspent txs have sufficient funds: {}",
+                output_tx_total
+            ));
         }
-    
+
         let unspent_tx = unspent_option.unwrap();
         let input_utxo_address = unspent_tx.address.clone().unwrap().assume_checked();
-    
-        let input_utxo_address_info = self.rpc_client.get_address_info(&input_utxo_address)?;
-    
-        let change_addr = self.rpc_client.get_raw_change_address(Some(json::AddressType::Bech32)).unwrap().assume_checked();
-    
-        Ok((unspent_tx, input_utxo_address_info, change_addr, network_relay_fee))
-    }
 
+        let input_utxo_address_info = self.rpc_client.get_address_info(&input_utxo_address)?;
+
+        let change_addr = self
+            .rpc_client
+            .get_raw_change_address(Some(json::AddressType::Bech32))
+            .unwrap()
+            .assume_checked();
+
+        Ok((
+            unspent_tx,
+            input_utxo_address_info,
+            change_addr,
+            network_relay_fee,
+        ))
+    }
 }
 
-pub fn generate_p2pk_tx(
-        extended_master_private_key: &str,
-        output_amount: Amount
-            ) -> Result<()> {
-                
+pub fn generate_p2pk_tx(extended_master_private_key: &str, output_amount: Amount) -> Result<()> {
     let secp = Secp256k1::new();
     let mut rng = rand::thread_rng();
     let (_, secp256k1_pubkey) = secp.generate_keypair(&mut rng);
@@ -98,7 +118,12 @@ pub fn generate_p2pk_tx(
     let output_amount_btc = output_amount.to_btc();
 
     let bitcoind_info = BitcoindRpcInfo::new()?;
-    let results: (ListUnspentResultEntry, GetAddressInfoResult, Address, Amount) = bitcoind_info.get_bitcoind_info(output_amount_btc)?;
+    let results: (
+        ListUnspentResultEntry,
+        GetAddressInfoResult,
+        Address,
+        Amount,
+    ) = bitcoind_info.get_bitcoind_info(output_amount_btc)?;
     let unspent_tx = results.0;
     let input_utxo_address = results.1;
     let change_addr = results.2;
@@ -106,19 +131,34 @@ pub fn generate_p2pk_tx(
 
     let input_utxo_derivation_path = input_utxo_address.hd_key_path.unwrap();
     let input_utxo_xkey_identifier = input_utxo_address.hd_seed_id.unwrap();
-    
+
     let input_utxo_txid = unspent_tx.txid.to_string();
     let input_utxo_script_pubkey = unspent_tx.script_pub_key;
     let input_utxo_value = unspent_tx.amount;
 
-    let (offline, fingerprint, account_0_xpub, input_xpub) =
-        ColdStorage::new(&secp, extended_master_private_key, &input_utxo_derivation_path)?;
+    let (offline, fingerprint, account_0_xpub, input_xpub) = ColdStorage::new(
+        &secp,
+        extended_master_private_key,
+        &input_utxo_derivation_path,
+    )?;
 
     let online = WatchOnly::new(account_0_xpub, input_xpub, fingerprint);
 
-    let created = online.create_psbt(&input_utxo_txid, &input_utxo_value, &output_amount, p2pk_pubkey,change_addr, network_relay_fee)?;
+    let created = online.create_psbt(
+        &input_utxo_txid,
+        &input_utxo_value,
+        &output_amount,
+        p2pk_pubkey,
+        change_addr,
+        network_relay_fee,
+    )?;
 
-    let updated = online.update_psbt(created, input_utxo_script_pubkey, &input_utxo_derivation_path, &input_utxo_value)?;
+    let updated = online.update_psbt(
+        created,
+        input_utxo_script_pubkey,
+        &input_utxo_derivation_path,
+        &input_utxo_value,
+    )?;
 
     let signed = offline.sign_psbt(&secp, updated)?;
 
@@ -148,12 +188,15 @@ struct ColdStorage {
 type ExportData = (ColdStorage, Fingerprint, Xpub, Xpub);
 
 impl ColdStorage {
-
     /// Constructs a new `ColdStorage` signer.
     ///
     /// # Returns
     ///     The newly created signer along with the data needed to configure a watch-only wallet.
-    fn new<C: Signing>(secp: &Secp256k1<C>, xpriv: &str, input_utxo_derivation_path: &DerivationPath) -> Result<ExportData> {
+    fn new<C: Signing>(
+        secp: &Secp256k1<C>,
+        xpriv: &str,
+        input_utxo_derivation_path: &DerivationPath,
+    ) -> Result<ExportData> {
         let master_xpriv = Xpriv::from_str(xpriv)?;
         let master_xpub = Xpub::from_priv(secp, &master_xpriv);
 
@@ -164,14 +207,19 @@ impl ColdStorage {
         let input_xpriv = master_xpriv.derive_priv(secp, &input_utxo_derivation_path)?;
         let input_xpub = Xpub::from_priv(secp, &input_xpriv);
 
-        let wallet = ColdStorage { master_xpriv, master_xpub };
+        let wallet = ColdStorage {
+            master_xpriv,
+            master_xpub,
+        };
         let fingerprint = wallet.master_fingerprint();
 
         Ok((wallet, fingerprint, account_0_xpub, input_xpub))
     }
 
     /// Returns the fingerprint for the master extended public key.
-    fn master_fingerprint(&self) -> Fingerprint { self.master_xpub.fingerprint() }
+    fn master_fingerprint(&self) -> Fingerprint {
+        self.master_xpub.fingerprint()
+    }
 
     /// Signs `psbt` with this signer.
     fn sign_psbt<C: Signing + Verification>(
@@ -209,27 +257,30 @@ impl WatchOnly {
     /// The reason for importing the `input_xpub` is so one can use bitcoind to grab a valid input
     /// to verify the workflow presented in this file.
     fn new(account_0_xpub: Xpub, input_xpub: Xpub, master_fingerprint: Fingerprint) -> Self {
-        WatchOnly { account_0_xpub, input_xpub, master_fingerprint }
+        WatchOnly {
+            account_0_xpub,
+            input_xpub,
+            master_fingerprint,
+        }
     }
 
     /// Creates the PSBT, in BIP174 parlance this is the 'Creater'.
     fn create_psbt(
-            &self, 
-            input_utxo_txid: &str,
-            input_utxo_value: &Amount,
-            output_amount_btc: &Amount,
-            p2pk_pubkey: PublicKey,
-            change_address: Address,
-            network_relay_fee: Amount) -> Result<Psbt> {
-
+        &self,
+        input_utxo_txid: &str,
+        input_utxo_value: &Amount,
+        output_amount_btc: &Amount,
+        p2pk_pubkey: PublicKey,
+        change_address: Address,
+        network_relay_fee: Amount,
+    ) -> Result<Psbt> {
         // network fee subtracted from payment total.  Similar to specifying "subtractFeeFromOutputs" argument with "fundrawtransaction" CLI
         let payment_float = output_amount_btc.to_btc() - network_relay_fee.to_btc();
         let payment_total = Amount::from_float_in(payment_float, bitcoin::Denomination::Bitcoin)?;
 
-
         let change_float = input_utxo_value.to_btc() - output_amount_btc.to_btc();
         let change_rounded = (change_float * 1000000.0).round() / 1000000.0;
-/*         println!("input_utxo_value={}, network_relay_fee={}, output_amount_btc={}, change_amount_rounded={}",
+        /*         println!("input_utxo_value={}, network_relay_fee={}, output_amount_btc={}, change_amount_rounded={}",
             input_utxo_value.to_btc(),
             network_relay_fee.to_btc(),
             output_amount_btc.to_btc(),
@@ -237,21 +288,29 @@ impl WatchOnly {
         ); */
         let change_total = Amount::from_float_in(change_rounded, bitcoin::Denomination::Bitcoin)?;
 
-
         let p2pk_pubkey_scriptbuf = ScriptBuf::new_p2pk(&p2pk_pubkey);
 
         let tx = Transaction {
             version: transaction::Version::TWO,
             lock_time: absolute::LockTime::ZERO,
             input: vec![TxIn {
-                previous_output: OutPoint { txid: input_utxo_txid.parse()?, vout: INPUT_UTXO_VOUT },
+                previous_output: OutPoint {
+                    txid: input_utxo_txid.parse()?,
+                    vout: INPUT_UTXO_VOUT,
+                },
                 script_sig: ScriptBuf::new(),
                 sequence: Sequence::MAX, // Disable LockTime and RBF.
                 witness: Witness::default(),
             }],
             output: vec![
-                TxOut { value: payment_total, script_pubkey: p2pk_pubkey_scriptbuf },
-                TxOut { value: change_total, script_pubkey: change_address.script_pubkey() }
+                TxOut {
+                    value: payment_total,
+                    script_pubkey: p2pk_pubkey_scriptbuf,
+                },
+                TxOut {
+                    value: change_total,
+                    script_pubkey: change_address.script_pubkey(),
+                },
             ],
         };
 
@@ -261,13 +320,21 @@ impl WatchOnly {
     }
 
     /// Updates the PSBT, in BIP174 parlance this is the 'Updater'.
-    fn update_psbt(&self,
-            mut psbt: Psbt, 
-            input_utxo_script_pubkey: ScriptBuf, 
-            input_utxo_derivation_path: &DerivationPath, 
-            input_utxo_value: &Amount) -> Result<Psbt> {
-        let t_out = TxOut { value: *input_utxo_value, script_pubkey:  input_utxo_script_pubkey};
-        let mut input = Input { witness_utxo: Some(t_out), ..Default::default() };
+    fn update_psbt(
+        &self,
+        mut psbt: Psbt,
+        input_utxo_script_pubkey: ScriptBuf,
+        input_utxo_derivation_path: &DerivationPath,
+        input_utxo_value: &Amount,
+    ) -> Result<Psbt> {
+        let t_out = TxOut {
+            value: *input_utxo_value,
+            script_pubkey: input_utxo_script_pubkey,
+        };
+        let mut input = Input {
+            witness_utxo: Some(t_out),
+            ..Default::default()
+        };
 
         let pk = self.input_xpub.to_pub();
         let wpkh = pk.wpubkey_hash();
@@ -310,7 +377,6 @@ impl WatchOnly {
 
         Ok(psbt)
     }
-
 }
 
 fn input_derivation_path(input_utxo_derivation_path: &str) -> Result<DerivationPath> {
@@ -321,9 +387,13 @@ fn input_derivation_path(input_utxo_derivation_path: &str) -> Result<DerivationP
 struct Error(Box<dyn std::error::Error>);
 
 impl<T: std::error::Error + 'static> From<T> for Error {
-    fn from(e: T) -> Self { Error(Box::new(e)) }
+    fn from(e: T) -> Self {
+        Error(Box::new(e))
+    }
 }
 
 impl fmt::Debug for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { fmt::Debug::fmt(&self.0, f) }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.0, f)
+    }
 }

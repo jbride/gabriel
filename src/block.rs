@@ -430,10 +430,10 @@ fn parse_blk_file(input: &[u8], use_magic: bool) -> IResult<&[u8], Vec<BitcoinBl
         let mut _block_result: IResult<&[u8], BitcoinBlock>;
         if use_magic {
             _block_result = parse_block_with_magic(remaining_input);
-        }else {
+        } else {
             _block_result = parse_block(remaining_input);
         }
-        
+
         match _block_result {
             Ok((remaining, block)) => {
                 blocks.push(block);
@@ -469,7 +469,7 @@ pub fn process_block(
     result_map: &ResultMap,
     tx_map: &TxMap,
     header_map: &HeaderMap,
-    use_magic: bool
+    use_magic: bool,
 ) -> usize {
     let mut blocks_processed = 0;
 

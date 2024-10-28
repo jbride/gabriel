@@ -153,7 +153,7 @@ After identifying P2PK utxos from an Initial Block Download (IBD), Gabriel can r
 Execute as follows:
 ```
 $ ./target/debug/gabriel block-async-eval \
-        --zmqpubrawblock-socket-url ipc:/tmp/zmqpubrawblock.unix \
+        --zmqpubrawblock-socket-url ipc:///tmp/zmqpubrawblock.unix \
         --output /tmp/async_blocks.txt
 ```
 
@@ -174,7 +174,7 @@ If interested in testing Gabriel's ability to consume and process a block with a
    NOTE:  for the following command, you'll already need to have unlocked your wallet via the bitcoin cli.
 
         $ XPRV=$( b-reg gethdkeys '{"active_only":true, "private":true}' \
-        | jq -r .[].xprv ) && echo $XPRV
+            | jq -r .[].xprv ) && echo $XPRV
 
 2. Create a tx w/ P2PK output:
    

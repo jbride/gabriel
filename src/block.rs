@@ -49,7 +49,7 @@ pub type HeaderMap = Arc<RwLock<BTreeMap<[u8; 32], [u8; 32]>>>;
 pub type TxMap = Arc<RwLock<BTreeMap<([u8; 32], u16), u64>>>;
 pub type ResultMap = Arc<RwLock<BTreeMap<[u8; 32], Record>>>;
 
-/// Parses a Bitcoin block header
+/// Parses a Bitcoin block header as per:  https://learnmeabitcoin.com/technical/block/#header
 fn parse_block_header(input: &[u8]) -> IResult<&[u8], BlockHeader> {
     let (input, version) = le_u32(input)?;
     let (input, previous_block_hash) = take(32usize)(input)?;

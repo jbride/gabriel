@@ -45,6 +45,16 @@ pub struct Record {
     pub p2pk_sats_spent: u64,
 }
 
+
+#[derive(Debug)]
+pub struct BlockAggregateOutput {
+    pub date: String,
+    pub block_height: usize,
+    pub block_hash_big_endian: String,
+    pub total_p2pk_addresses: u32,
+    pub total_p2pk_value: f64,
+}
+
 // <previous_block_hash, current_block_hash>
 pub type HeaderMap = Arc<RwLock<BTreeMap<[u8; 32], [u8; 32]>>>;
 

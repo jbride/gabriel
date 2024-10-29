@@ -1,18 +1,22 @@
 use std::{
-    fs::{File, OpenOptions}, io::{Seek, Write}, path::PathBuf, str::FromStr
+    env, fs::{File, OpenOptions}, io::{Seek, Write}, path::PathBuf, str::FromStr
 };
 
 use anyhow::{Ok, Result};
 use bitcoin::{hashes::sha256d::Hash, Amount};
 use bitcoind_rpc::BitcoindRpcInfo;
-use block::{process_block, process_block_file, process_blocks_in_parallel, Record};
+use block::{
+    process_block, process_block_file, process_blocks_in_parallel, BlockAggregateOutput, Record,
+};
 use clap::{Parser, Subcommand};
 use nom::AsBytes;
+use persistence::SQLitePersistence;
 use zeromq::{Socket, SocketRecv};
 
 mod bitcoind_rpc;
 mod block;
 mod p2pktx;
+mod persistence;
 mod tx;
 
 use block::{HeaderMap, ResultMap, TxMap};
@@ -86,6 +90,7 @@ struct GraphArgs {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    SQLitePersistence::new()?;
     match &cli.command {
         Commands::BlockFileEval(args) => run_block_file_eval(args),
         Commands::Index(args) => run_index(args),
@@ -99,49 +104,6 @@ fn generate_p2pk_tx(args: &GenerateP2PKTxArgs) -> Result<()> {
     let to_amount = Amount::from_str(&args.output_amount_btc)?;
     let e_master_key = &args.extended_master_private_key;
     p2pktx::generate_p2pk_tx(e_master_key, to_amount)
-}
-
-fn append_single_block_result_to_output(
-    mut file: &File,
-    bitcoind_info: &BitcoindRpcInfo,
-    h_map_entry: (&[u8; 32], &[u8; 32]) ,
-    record: &Record,
-) -> Result<()> {
-    // Get previous and current block hashes
-    let mut raw_previous_block_hash = h_map_entry.0.clone();
-    raw_previous_block_hash.reverse();
-    let previous_block_hash = hex::encode(raw_previous_block_hash);
-
-    let mut raw_current_block_hash = h_map_entry.1.clone();
-    let sha256d_hash = Hash::from_bytes_ref(&raw_current_block_hash);
-    
-    let mut block_height = 0;
-    
-    match bitcoind_info.get_block_height(sha256d_hash){
-        std::result::Result::Ok(x) => { block_height = x},
-        Err(e) => println!("block not found: exception={}", e),
-    }
-    raw_current_block_hash.reverse();
-    let current_block_hash_header = hex::encode(raw_current_block_hash);
-
-    println!(
-        "previous_block_hash={} , current_block_hash={}, block_height={}",
-        previous_block_hash, current_block_hash_header, block_height
-    );
-
-    // Determine total p2pk addresses and value
-    let mut total_p2pk_addresses = record.p2pk_addresses_added.to_owned();
-    total_p2pk_addresses -= record.p2pk_addresses_spent.to_owned();
-    let mut total_p2pk_value = record.p2pk_sats_added.to_owned() as f64 / 100_000_000.0;
-    total_p2pk_value -= record.p2pk_sats_spent.to_owned() as f64 / 100_000_000.0;
-    let date = &record.date;
-
-    let output_line = format!(
-        "{},{},{},{},{}",
-        block_height,current_block_hash_header, date, total_p2pk_addresses, total_p2pk_value
-    );
-    writeln!(file, "{}", output_line)?;
-    Ok(())
 }
 
 fn run_block_file_eval(args: &BlockFileEvalArgs) -> Result<()> {
@@ -185,13 +147,22 @@ fn run_block_file_eval(args: &BlockFileEvalArgs) -> Result<()> {
     file.write_all(HEADER.as_bytes())?;
 
     let bitcoind_info = BitcoindRpcInfo::new()?;
+    let sqlite_persistence = persistence::SQLitePersistence::new()?;
+
     let h_binding = header_map.read().unwrap();
     let mut header_map_iter = h_binding.iter();
-    while let Some(h_map_entry) = header_map_iter.next(){
+    while let Some(h_map_entry) = header_map_iter.next() {
         let r_binding = result_map.read().unwrap();
         let record = r_binding.get(h_map_entry.1);
-        
-        append_single_block_result_to_output(&file, &bitcoind_info, h_map_entry, record.unwrap())?;
+
+        let block_aggregate = get_block_aggregate_output(&bitcoind_info, h_map_entry, record.unwrap())?;
+        append_single_block_result_to_file(&file, &block_aggregate)?;
+        match sqlite_persistence.persist_block_aggregates(&block_aggregate){
+            std::result::Result::Ok(_) => {},
+            Err(e) => {
+                eprintln!("Error persisting {}, error={}", block_aggregate.block_hash_big_endian, e);
+            },
+        }
     }
     Ok(())
 }
@@ -233,6 +204,7 @@ async fn run_async_block_eval_listener(args: &BlockAsyncEvalArgs) -> Result<()> 
     file.seek(std::io::SeekFrom::End(0))?;
 
     let bitcoind_info = BitcoindRpcInfo::new()?;
+    let sqlite_persistence = persistence::SQLitePersistence::new()?;
 
     loop {
         let zmq_message = socket.recv().await?;
@@ -254,7 +226,14 @@ async fn run_async_block_eval_listener(args: &BlockAsyncEvalArgs) -> Result<()> 
                 let r_binding = result_map.read().unwrap();
                 let record_entry = r_binding.first_key_value().unwrap();
                 let record = record_entry.1;
-                let _ = append_single_block_result_to_output(&file, &bitcoind_info, h_map_entry, record);
+                let block_aggregate = get_block_aggregate_output(&bitcoind_info, h_map_entry, record)?;
+                append_single_block_result_to_file(&file, &block_aggregate)?;
+                match sqlite_persistence.persist_block_aggregates(&block_aggregate){
+                    std::result::Result::Ok(_) => {},
+                    Err(e) => {
+                        eprintln!("Error persisting {}, error={}", block_aggregate.block_hash_big_endian, e);
+                    },
+                };
             }
             None => panic!("second element from zeromq raw block is non-existent!"),
         }
@@ -329,4 +308,71 @@ fn run_graph(_args: &GraphArgs) -> Result<()> {
     // TODO: Implement graph functionality
     println!("Graph functionality not yet implemented");
     Ok(())
+}
+
+fn append_single_block_result_to_file(
+    mut file: &File,
+    block_aggregate: &BlockAggregateOutput
+) -> Result<()> {
+    let write_output_env = env::var("WRITE_OUTPUT_TO_FILE");
+    match write_output_env {
+        std::result::Result::Ok(x) => {
+            if x.parse().unwrap() {
+                let output_line = format!(
+                    "{},{},{},{},{}",
+                    block_aggregate.block_height,
+                    block_aggregate.block_hash_big_endian,
+                    block_aggregate.date,
+                    block_aggregate.total_p2pk_addresses,
+                    block_aggregate.total_p2pk_value
+                );
+                writeln!(file, "{}", output_line)?;
+            }
+        },
+        Err(_) => {},
+    }
+    Ok(())
+}
+
+fn get_block_aggregate_output(
+    bitcoind_info: &BitcoindRpcInfo,
+    h_map_entry: (&[u8; 32], &[u8; 32]),
+    record: &Record,
+) -> Result<BlockAggregateOutput> {
+    // Get previous and current block hashes
+    let mut raw_previous_block_hash = h_map_entry.0.clone();
+    raw_previous_block_hash.reverse();
+    let previous_block_hash = hex::encode(raw_previous_block_hash);
+
+    let mut raw_current_block_hash = h_map_entry.1.clone();
+    let sha256d_hash = Hash::from_bytes_ref(&raw_current_block_hash);
+
+    let mut block_height = 0;
+
+    match bitcoind_info.get_block_height(sha256d_hash) {
+        std::result::Result::Ok(x) => block_height = x,
+        Err(e) => println!("block not found: exception={}", e),
+    }
+    raw_current_block_hash.reverse();
+    let current_block_hash_header = hex::encode(raw_current_block_hash);
+
+    println!(
+        "previous_block_hash={} , current_block_hash={}, block_height={}",
+        previous_block_hash, current_block_hash_header, block_height
+    );
+
+    // Determine total p2pk addresses and value
+    let mut total_p2pk_addresses = record.p2pk_addresses_added.to_owned();
+    total_p2pk_addresses -= record.p2pk_addresses_spent.to_owned();
+    let mut total_p2pk_value = record.p2pk_sats_added.to_owned() as f64 / 100_000_000.0;
+    total_p2pk_value -= record.p2pk_sats_spent.to_owned() as f64 / 100_000_000.0;
+    let date = &record.date;
+
+    Ok(BlockAggregateOutput {
+        date: date.clone(),
+        block_height,
+        block_hash_big_endian: current_block_hash_header,
+        total_p2pk_addresses,
+        total_p2pk_value,
+    })
 }

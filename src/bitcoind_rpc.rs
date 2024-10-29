@@ -93,6 +93,5 @@ impl BitcoindRpcInfo {
         let hash = BlockHash::from_raw_hash(*sha256d_hash);
         let block_header = self.rpc_client.get_block_header_info(&hash)?;
         Ok(block_header.height)
-
     }
 }

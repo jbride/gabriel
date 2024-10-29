@@ -7,22 +7,20 @@
 //!
 
 use std::collections::BTreeMap;
-use std::str::FromStr;
 use std::fmt;
+use std::str::FromStr;
 
 use anyhow::Result;
 
-use bitcoin::bip32::{
-    DerivationPath, Fingerprint, IntoDerivationPath, Xpriv, Xpub,
-};
+use bitcoin::bip32::{DerivationPath, Fingerprint, Xpriv, Xpub};
 use bitcoin::consensus::encode;
 use bitcoin::key::rand;
 use bitcoin::locktime::absolute;
 use bitcoin::psbt::{self, Input, Psbt, PsbtSighashType};
 use bitcoin::secp256k1::{Secp256k1, Signing, Verification};
 use bitcoin::{
-    transaction, Address, Amount, OutPoint,
-    PublicKey, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness,
+    transaction, Address, Amount, OutPoint, PublicKey, ScriptBuf, Sequence, Transaction, TxIn,
+    TxOut, Witness,
 };
 
 extern crate bitcoincore_rpc;

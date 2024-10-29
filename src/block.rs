@@ -45,8 +45,12 @@ pub struct Record {
     pub p2pk_sats_spent: u64,
 }
 
+// <previous_block_hash, current_block_hash>
 pub type HeaderMap = Arc<RwLock<BTreeMap<[u8; 32], [u8; 32]>>>;
+
 pub type TxMap = Arc<RwLock<BTreeMap<([u8; 32], u16), u64>>>;
+
+// <current_block_hash , &Record>
 pub type ResultMap = Arc<RwLock<BTreeMap<[u8; 32], Record>>>;
 
 /// Parses a Bitcoin block header as per:  https://learnmeabitcoin.com/technical/block/#header

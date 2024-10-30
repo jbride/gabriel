@@ -36,7 +36,7 @@ pub struct BitcoinBlock {
     pub header: BlockHeader,
     pub transactions: Vec<Transaction>,
 }
-
+#[derive(Clone)]
 pub struct Record {
     pub date: String,
     pub p2pk_addresses_added: u32,

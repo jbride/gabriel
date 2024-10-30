@@ -152,10 +152,13 @@ fn run_block_file_eval(args: &BlockFileEvalArgs) -> Result<()> {
     let h_binding = header_map.read().unwrap();
     let mut header_map_iter = h_binding.iter();
     while let Some(h_map_entry) = header_map_iter.next() {
-        let r_binding = result_map.read().unwrap();
-        let record = r_binding.get(h_map_entry.1);
-
-        let block_aggregate = get_block_aggregate_output(&bitcoind_info, h_map_entry, record.unwrap())?;
+        let record = {
+            let r_binding = result_map.read().unwrap();
+            r_binding.get(h_map_entry.1).cloned()
+        };
+        
+        let h_map_entry = (*h_map_entry.0, *h_map_entry.1);
+        let block_aggregate = get_block_aggregate_output(&bitcoind_info, &h_map_entry, &record.unwrap())?;
         append_single_block_result_to_file(&file, &block_aggregate)?;
         match sqlite_persistence.persist_block_aggregates(&block_aggregate){
             std::result::Result::Ok(_) => {},
@@ -221,12 +224,18 @@ async fn run_async_block_eval_listener(args: &BlockAsyncEvalArgs) -> Result<()> 
                     tx_count
                 );
 
-                let h_binding = header_map.read().unwrap();
-                let h_map_entry = h_binding.first_key_value().unwrap();
-                let r_binding = result_map.read().unwrap();
-                let record_entry = r_binding.first_key_value().unwrap();
-                let record = record_entry.1;
-                let block_aggregate = get_block_aggregate_output(&bitcoind_info, h_map_entry, record)?;
+                let h_map_entry = {
+                    let h_binding = header_map.read().unwrap();
+                    let (key, value) = h_binding.first_key_value().unwrap();
+                    (*key, *value)
+                };
+                let record = {
+                    let r_binding = result_map.read().unwrap();
+                    r_binding.first_key_value().unwrap().1.clone()
+                };
+                
+                
+                let block_aggregate = get_block_aggregate_output(&bitcoind_info, &h_map_entry, &record)?;
                 append_single_block_result_to_file(&file, &block_aggregate)?;
                 match sqlite_persistence.persist_block_aggregates(&block_aggregate){
                     std::result::Result::Ok(_) => {},
@@ -336,7 +345,7 @@ fn append_single_block_result_to_file(
 
 fn get_block_aggregate_output(
     bitcoind_info: &BitcoindRpcInfo,
-    h_map_entry: (&[u8; 32], &[u8; 32]),
+    h_map_entry: &([u8; 32], [u8; 32]),
     record: &Record,
 ) -> Result<BlockAggregateOutput> {
     // Get previous and current block hashes

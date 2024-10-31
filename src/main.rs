@@ -27,6 +27,9 @@ use indicatif::ProgressBar;
 
 use axum::routing::get;
 use std::net::SocketAddr;
+use tower_http::services::{ServeDir, ServeFile};
+use tower_http::trace::TraceLayer;
+use tower::ServiceBuilder;
 
 const HEADER: &str = "Height,Block Hash,Date,Total P2PK addresses,Total P2PK coins\n";
 
@@ -96,7 +99,6 @@ struct GraphArgs {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    SQLitePersistence::new()?;
     match &cli.command {
         Commands::BlockFileEval(args) => run_block_file_eval(args),
         Commands::Index(args) => run_index(args),
@@ -198,6 +200,7 @@ async fn run_async_block_eval_listener(args: &BlockAsyncEvalArgs) -> Result<()> 
         .route("/api/block/hash/:hash", get(api::get_block_by_hash))
         .route("/api/block/height/:height", get(api::get_block_by_height))
         .route("/api/blocks/stream", get(api::stream_blocks))
+        .nest_service("/", ServeDir::new("web/build"))
         .with_state(app_state);
 
     let addr: SocketAddr = env::var("API_SOCKET_ADDR")

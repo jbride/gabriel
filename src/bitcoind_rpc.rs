@@ -15,15 +15,15 @@ pub struct BitcoindRpcInfo {
 
 impl BitcoindRpcInfo {
     pub fn new() -> Result<Self> {
-        let url = env::var("URL").map_err(|e| anyhow!("Missing URL environment variable: {}", e))?;
+        let url = env::var("BITCOIND_RPC_URL").map_err(|e| anyhow!("Missing BITCOIND_RPC_URL environment variable: {}", e))?;
         
-        let auth = match env::var("COOKIE") {
+        let auth = match env::var("BITCOIND_RPC_COOKIE_PATH") {
             Ok(cookiefile) => Auth::CookieFile(cookiefile.into()),
             Err(_) => {
-                let user = env::var("USER")
-                    .map_err(|e| anyhow!("Missing USER environment variable: {}", e))?;
-                let pass = env::var("PASS")
-                    .map_err(|e| anyhow!("Missing PASS environment variable: {}", e))?;
+                let user = env::var("BITCOIND_RPC_USER")
+                    .map_err(|e| anyhow!("Missing BITCOIND_RPC_USER environment variable: {}", e))?;
+                let pass = env::var("BITCOIND_RPC_PASS")
+                    .map_err(|e| anyhow!("Missing BITCOIND_RPC_PASS environment variable: {}", e))?;
                 Auth::UserPass(user, pass)
             }
         };

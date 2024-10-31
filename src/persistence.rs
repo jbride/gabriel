@@ -1,5 +1,6 @@
 use std::env;
 
+use log::debug;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 
@@ -28,7 +29,7 @@ impl SQLitePersistence {
              )",
             [],
         )?;
-        println!(
+        debug!(
             "p2pk_utxo_block_aggregates: table now exists at: {}",
             sqlite_absolute_path
         );

@@ -1,8 +1,9 @@
 use std::{
-    env, fs::{File, OpenOptions}, io::{Seek, Write}, path::PathBuf, str::FromStr
+    env, fs::{File, OpenOptions}, io::{Seek, Write}, path::PathBuf, str::FromStr, sync::Arc
 };
 
 use anyhow::{Ok, Result};
+use api::AppState;
 use bitcoin::{hashes::sha256d::Hash, Amount};
 use bitcoind_rpc::BitcoindRpcInfo;
 use block::{
@@ -18,9 +19,16 @@ mod block;
 mod p2pktx;
 mod persistence;
 mod tx;
+mod api;
 
 use block::{HeaderMap, ResultMap, TxMap};
 use indicatif::ProgressBar;
+
+use axum::{
+    routing::get,
+    Router,
+};
+use std::net::SocketAddr;
 
 const HEADER: &str = "Height,Block Hash,Date,Total P2PK addresses,Total P2PK coins\n";
 
@@ -171,6 +179,32 @@ fn run_block_file_eval(args: &BlockFileEvalArgs) -> Result<()> {
 }
 
 async fn run_async_block_eval_listener(args: &BlockAsyncEvalArgs) -> Result<()> {
+    
+    let sqlite_persistence = persistence::SQLitePersistence::new()?;
+
+    // Move ownership of sqlite_persistence into the Arc
+    let app_state = Arc::new(AppState { db: sqlite_persistence });
+
+    // Clone the Arc for the ZMQ listener to use
+    let zmq_state = Arc::clone(&app_state);
+    
+    let app = axum::Router::new()
+        .route("/api/aggregates", get(api::get_aggregates))
+        .route("/api/block/hash/:hash", get(api::get_block_by_hash))
+        .route("/api/block/height/:height", get(api::get_block_by_height))
+        .with_state(app_state);
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+    println!("REST API listening on {}", addr);
+    
+    // Spawn the server in the background
+    tokio::spawn(async move {
+        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+
     println!(
         "zmqpubrawblock_socket_url: {} ;  output file = {}",
         &args.zmqpubrawblock_socket_url,
@@ -207,7 +241,7 @@ async fn run_async_block_eval_listener(args: &BlockAsyncEvalArgs) -> Result<()> 
     file.seek(std::io::SeekFrom::End(0))?;
 
     let bitcoind_info = BitcoindRpcInfo::new()?;
-    let sqlite_persistence = persistence::SQLitePersistence::new()?;
+    
 
     loop {
         let zmq_message = socket.recv().await?;
@@ -237,7 +271,7 @@ async fn run_async_block_eval_listener(args: &BlockAsyncEvalArgs) -> Result<()> 
                 
                 let block_aggregate = get_block_aggregate_output(&bitcoind_info, &h_map_entry, &record)?;
                 append_single_block_result_to_file(&file, &block_aggregate)?;
-                match sqlite_persistence.persist_block_aggregates(&block_aggregate){
+                match zmq_state.db.persist_block_aggregates(&block_aggregate) {
                     std::result::Result::Ok(_) => {},
                     Err(e) => {
                         eprintln!("Error persisting {}, error={}", block_aggregate.block_hash_big_endian, e);

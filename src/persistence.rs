@@ -21,10 +21,10 @@ impl SQLitePersistence {
         sql_conn.execute(
             "create table if not exists p2pk_utxo_block_aggregates (
                  block_height integer not null,
-                 block_hash text primary key,
+                 block_hash_big_endian text primary key,
                  date text not null,
-                 p2pk_utxo_count integer not null,
-                 p2pk_utxo_value real not null
+                 total_p2pk_addresses integer not null,
+                 total_p2pk_value real not null
              )",
             [],
         )?;
@@ -52,5 +52,68 @@ impl SQLitePersistence {
         ])?;
 
         Ok(db_exec_results)
+    }
+
+    pub fn get_total_aggregates(&self) -> anyhow::Result<(i64, f64)> {
+        let sql_conn = self.pool.get().unwrap();
+        let mut stmt = sql_conn.prepare(
+            "SELECT SUM(total_p2pk_addresses) as total_count, 
+             SUM(total_p2pk_value) as total_value 
+             FROM p2pk_utxo_block_aggregates"
+        )?;
+        
+        let (count, value) = stmt.query_row([], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
+        
+        Ok((count, value))
+    }
+
+    pub fn get_block_by_hash(&self, hash: &str) -> anyhow::Result<Option<BlockAggregateOutput>> {
+        let sql_conn = self.pool.get().unwrap();
+        let mut stmt = sql_conn.prepare(
+            "SELECT date, block_height, block_hash_big_endian, total_p2pk_addresses, total_p2pk_value 
+             FROM p2pk_utxo_block_aggregates WHERE block_hash_big_endian = ?"
+        )?;
+        
+        let result = stmt.query_row([hash], |row| {
+            Ok(BlockAggregateOutput {
+                date: row.get(0)?,
+                block_height: row.get(1)?,
+                block_hash_big_endian: row.get(2)?,
+                total_p2pk_addresses: row.get(3)?,
+                total_p2pk_value: row.get(4)?,
+            })
+        });
+        
+        match result {
+            Ok(block) => Ok(Some(block)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn get_block_by_height(&self, height: i64) -> anyhow::Result<Option<BlockAggregateOutput>> {
+        let sql_conn = self.pool.get().unwrap();
+        let mut stmt = sql_conn.prepare(
+            "SELECT date, block_height, block_hash_big_endian, total_p2pk_addresses, total_p2pk_value 
+             FROM p2pk_utxo_block_aggregates WHERE block_height = ?"
+        )?;
+        
+        let result = stmt.query_row([height], |row| {
+            Ok(BlockAggregateOutput {
+                date: row.get(0)?,
+                block_height: row.get(1)?,
+                block_hash_big_endian: row.get(2)?,
+                total_p2pk_addresses: row.get(3)?,
+                total_p2pk_value: row.get(4)?,
+            })
+        });
+        
+        match result {
+            Ok(block) => Ok(Some(block)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 }

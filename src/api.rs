@@ -1,10 +1,11 @@
 use axum::{
-    extract::{Path, State},
-    Json,
+    extract::{Path, State}, response::{sse::Event, Sse}, Json
 };
+use futures::{Stream, stream};
 use serde::Serialize;
-use crate::persistence::SQLitePersistence;
-use std::sync::Arc;
+use tokio::sync::broadcast;
+use crate::{block::BlockAggregateOutput, persistence::SQLitePersistence};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 
 #[derive(Serialize)]
 pub struct AggregateResponse {
@@ -23,6 +24,25 @@ pub struct BlockResponse {
 
 pub struct AppState {
     pub(crate) db: SQLitePersistence,
+    pub(crate) tx: broadcast::Sender<BlockAggregateOutput>,
+}
+
+pub(crate) async fn stream_blocks(
+    State(state): State<Arc<AppState>>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let mut rx = state.tx.subscribe();
+    
+    let stream = stream::unfold(rx, move |mut rx| async move {
+        let msg = rx.recv().await.ok()?;
+        let event = Event::default().data(serde_json::to_string(&msg).unwrap());
+        Some((Ok(event), rx))
+    });
+
+    Sse::new(stream).keep_alive(
+        axum::response::sse::KeepAlive::new()
+            .interval(Duration::from_secs(1))
+            .text("keep-alive-text")
+    )
 }
 
 pub async fn get_aggregates(

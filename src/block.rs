@@ -46,7 +46,7 @@ pub struct Record {
 }
 
 
-#[derive(Debug)]
+#[derive(Clone,Debug, serde::Serialize)]
 pub struct BlockAggregateOutput {
     pub date: String,
     pub block_height: usize,

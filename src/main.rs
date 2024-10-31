@@ -260,40 +260,14 @@ fn run_index(args: &IndexArgs) -> Result<()> {
     if let Err(e) = process_blocks_in_parallel(&args.input, &result_map, &tx_map, &header_map) {
         eprintln!("Failed to process blocks: {:?}", e);
     }
-    let mut out: Vec<String> = vec![];
     let mut last_block_hash: [u8; 32] =
         hex::decode("4860eb18bf1b1620e37e9490fc8a427514416fd75159ab86688e9a8300000000")
             .unwrap()
             .try_into()
             .expect("slice with incorrect length"); // Genesis block
     let mut height = 0;
-    let mut p2pk_addresses = 0;
-    let mut p2pk_coins = 0.0;
-    while let Some(next_block_hash) = header_map.read().unwrap().get(&last_block_hash) {
-        // println!("Next block hash: {:?}", hex::encode(next_block_hash.1));
-        let result_map_read = result_map.read().unwrap();
-        let record = result_map_read.get(next_block_hash);
-        if let Some(record) = record {
-            let Record {
-                date,
-                p2pk_addresses_added,
-                p2pk_sats_added,
-                p2pk_addresses_spent,
-                p2pk_sats_spent,
-            } = &record;
-            p2pk_addresses += p2pk_addresses_added;
-            p2pk_addresses -= p2pk_addresses_spent;
-            p2pk_coins += p2pk_sats_added.to_owned() as f64 / 100_000_000.0;
-            p2pk_coins -= p2pk_sats_spent.to_owned() as f64 / 100_000_000.0;
-            out.push(format!("{height},{date},{p2pk_addresses},{p2pk_coins}"));
-        }
-        height += 1;
-        last_block_hash = *next_block_hash;
-    }
 
-    println!("Last block hash: {:?}", hex::encode(last_block_hash));
-    println!("Height: {}", height);
-
+    // prep output file
     let mut file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -304,11 +278,37 @@ fn run_index(args: &IndexArgs) -> Result<()> {
     // When writing back to the file, ensure we start from the beginning
     file.seek(std::io::SeekFrom::Start(0))?;
     file.set_len(0)?; // Truncate the file
-
     file.write_all(HEADER.as_bytes())?;
-    for line in &out {
-        writeln!(file, "{}", line)?;
+
+    let bitcoind_info = BitcoindRpcInfo::new()?;
+    let sqlite_persistence = persistence::SQLitePersistence::new()?;
+
+    /*  Trade-offs with hard-coading th starting block hash
+            1)  hard-coded hash is mainnet only.  Could change to env var to allow for regtest, testnet4, etc
+            2)  need to keep header_map and result_map in-memory.
+                Alternative would be to persist results to sqlite immediately after parsing each block.
+            3)  Now that block analysis includes RPC invocation of bitcoind to retrieve block_height, no need to sequentially determine block height
+     */
+    while let Some(next_block_hash) = header_map.read().unwrap().get(&last_block_hash) {
+        // println!("Next block hash: {:?}", hex::encode(next_block_hash.1));
+        let result_map_read = result_map.read().unwrap();
+        let record = result_map_read.get(next_block_hash).unwrap();
+        
+        let h_map_entry = (last_block_hash,*next_block_hash);
+        let block_aggregate = get_block_aggregate_output(&bitcoind_info, &h_map_entry, &record)?;
+        append_single_block_result_to_file(&file, &block_aggregate)?;
+        match sqlite_persistence.persist_block_aggregates(&block_aggregate){
+            std::result::Result::Ok(_) => {},
+            Err(e) => {
+                eprintln!("Error persisting {}, error={}", block_aggregate.block_hash_big_endian, e);
+            },
+        }
+        height += 1;
+        last_block_hash = *next_block_hash;
     }
+
+    println!("Last block hash: {:?}", hex::encode(last_block_hash));
+    println!("Height: {}", height);
 
     Ok(())
 }

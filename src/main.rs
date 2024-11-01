@@ -11,7 +11,6 @@ use block::{
 };
 use clap::{Parser, Subcommand};
 use nom::AsBytes;
-use persistence::SQLitePersistence;
 use tokio::sync::broadcast;
 use zeromq::{Socket, SocketRecv};
 
@@ -27,7 +26,7 @@ use indicatif::ProgressBar;
 
 use axum::routing::get;
 use std::net::SocketAddr;
-use tower_http::services::{ServeDir, ServeFile};
+use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use tower::ServiceBuilder;
 
@@ -102,17 +101,12 @@ async fn main() -> Result<()> {
     match &cli.command {
         Commands::BlockFileEval(args) => run_block_file_eval(args),
         Commands::Index(args) => run_index(args),
+        Commands::BlockAsyncEval(args) => evaluate_blocks_continuously(args).await,
         Commands::Graph(args) => run_graph(args),
         Commands::GenerateP2PKTx(args) => generate_p2pk_tx(args),
-        Commands::BlockAsyncEval(args) => run_async_block_eval_listener(args).await,
     }
 }
 
-fn generate_p2pk_tx(args: &GenerateP2PKTxArgs) -> Result<()> {
-    let to_amount = Amount::from_str(&args.output_amount_btc)?;
-    let e_master_key = &args.extended_master_private_key;
-    p2pktx::generate_p2pk_tx(e_master_key, to_amount)
-}
 
 fn run_block_file_eval(args: &BlockFileEvalArgs) -> Result<()> {
     // Maps previous block hash to next merkle root
@@ -176,126 +170,6 @@ fn run_block_file_eval(args: &BlockFileEvalArgs) -> Result<()> {
         }
     }
     Ok(())
-}
-
-async fn run_async_block_eval_listener(args: &BlockAsyncEvalArgs) -> Result<()> {
-    
-    let sqlite_persistence = persistence::SQLitePersistence::new()?;
-
-    // Create a broadcast channel for SSE events
-    let (tx, _rx) = broadcast::channel(100);
-
-    // SQLite connection pool shared across REST API and ZMQ block consumer
-    // Subsequently, move ownership of sqlite_persistence into the Arc
-    let app_state = Arc::new(AppState { 
-        db: sqlite_persistence,
-        tx: tx
-    });
-
-    // Clone the Arc for the ZMQ listener to use
-    let zmq_state = Arc::clone(&app_state);
-    
-    let app = axum::Router::new()
-        .route("/api/aggregates", get(api::get_aggregates))
-        .route("/api/block/hash/:hash", get(api::get_block_by_hash))
-        .route("/api/block/height/:height", get(api::get_block_by_height))
-        .route("/api/blocks/stream", get(api::stream_blocks))
-        .nest_service("/", ServeDir::new("web/build"))
-        .with_state(app_state);
-
-    let addr: SocketAddr = env::var("API_SOCKET_ADDR")
-        .unwrap_or_else(|_| "127.0.0.1:3000".to_string())
-        .parse()
-        .expect("Failed to parse API_ADDR");
-    println!("REST API listening on {}", addr);
-    
-    // Spawn the server in the background
-    tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-        axum::serve(listener, app.into_make_service())
-            .await
-            .unwrap();
-    });
-
-    println!(
-        "zmqpubrawblock_socket_url: {} ;  output file = {}",
-        &args.zmqpubrawblock_socket_url,
-        &args.output.display()
-    );
-
-    // Maps previous block hash to next merkle root
-    let header_map: HeaderMap = Default::default();
-    // Maps txid to tx value
-    let tx_map: TxMap = Default::default();
-
-    // Maps header hash to result Record
-    let result_map: ResultMap = Default::default();
-    let pb = ProgressBar::new(1);
-
-    let mut socket = zeromq::SubSocket::new();
-    socket
-        .connect(&args.zmqpubrawblock_socket_url)
-        .await
-        .expect(&format!(
-            "Failed to connect: {}",
-            &args.zmqpubrawblock_socket_url
-        ));
-
-    socket.subscribe("").await?;
-
-    // prep output file
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&args.output)?;
-    file.seek(std::io::SeekFrom::End(0))?;
-
-    let bitcoind_info = BitcoindRpcInfo::new()?;
-    
-
-    loop {
-        let zmq_message = socket.recv().await?;
-
-        let second_element = zmq_message.get(1);
-        match second_element {
-            Some(block_bytes) => {
-                let u8_byte_array = block_bytes.as_bytes();
-                let tx_count =
-                    process_block(u8_byte_array, &pb, &result_map, &tx_map, &header_map, false);
-                println!(
-                    "received block! byte length: {}; tx_count: {}",
-                    u8_byte_array.len(),
-                    tx_count
-                );
-
-                let h_map_entry = {
-                    let h_binding = header_map.read().unwrap();
-                    let (key, value) = h_binding.first_key_value().unwrap();
-                    (*key, *value)
-                };
-                let record = {
-                    let r_binding = result_map.read().unwrap();
-                    r_binding.first_key_value().unwrap().1.clone()
-                };
-                
-                
-                let block_aggregate = get_block_aggregate_output(&bitcoind_info, &h_map_entry, &record)?;
-                match zmq_state.db.persist_block_aggregates(&block_aggregate) {
-                    std::result::Result::Ok(_) => {},
-                    Err(e) => {
-                        eprintln!("Error persisting {}, error={}", block_aggregate.block_hash_big_endian, e);
-                    },
-                };
-                append_single_block_result_to_file(&file, &block_aggregate)?;
-
-                // Broadcast the new block aggregate
-                let _ = zmq_state.tx.send(block_aggregate);
-            }
-            None => panic!("second element from zeromq raw block is non-existent!"),
-        }
-    }
 }
 
 fn run_index(args: &IndexArgs) -> Result<()> {
@@ -362,10 +236,139 @@ fn run_index(args: &IndexArgs) -> Result<()> {
     Ok(())
 }
 
+async fn evaluate_blocks_continuously(args: &BlockAsyncEvalArgs) -> Result<()> {
+    
+    // Create a SQLite persistence instance with a connection pool
+    let sqlite_persistence = persistence::SQLitePersistence::new()?;
+
+    // Create a broadcast channel for SSE events
+    let (tx, _rx) = broadcast::channel(100);
+
+    // SQLite connection pool shared across REST API and ZMQ block consumer
+    // Subsequently, move ownership of sqlite_persistence into the Arc
+    let app_state = Arc::new(AppState { 
+        db: sqlite_persistence,
+        tx: tx
+    });
+
+    // Clone the Arc for the ZMQ listener to use (later in this function)
+    let zmq_state = Arc::clone(&app_state);
+    
+    // Define routes for REST API, SSE stream, and React frontend
+    let web_app_router = axum::Router::new()
+        .route("/api/aggregates", get(api::get_aggregates))
+        .route("/api/block/hash/:hash", get(api::get_block_by_hash))
+        .route("/api/block/height/:height", get(api::get_block_by_height))
+        .route("/api/blocks/stream", get(api::stream_blocks))
+        .nest_service("/", ServeDir::new("web/build"))
+        .with_state(app_state);
+
+    // Determine socket that web_app will bind to
+    let web_addr: SocketAddr = env::var("WEB_SOCKET_ADDR")
+        .unwrap_or_else(|_| "127.0.0.1:3000".to_string())
+        .parse()
+        .expect("Failed to parse API_ADDR");
+    println!("REST API listening on {}", web_addr);
+    
+    // Spawn the web app server in the background
+    tokio::spawn(async move {
+        let listener = tokio::net::TcpListener::bind(web_addr).await.unwrap();
+        axum::serve(listener, web_app_router.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    println!(
+        "zmqpubrawblock_socket_url: {} ;  output file = {}",
+        &args.zmqpubrawblock_socket_url,
+        &args.output.display()
+    );
+
+    // Maps previous block hash to next merkle root
+    let header_map: HeaderMap = Default::default();
+    // Maps txid to tx value
+    let tx_map: TxMap = Default::default();
+
+    // Maps header hash to result Record
+    let result_map: ResultMap = Default::default();
+    let pb = ProgressBar::new(1);
+
+    let mut socket = zeromq::SubSocket::new();
+    socket
+        .connect(&args.zmqpubrawblock_socket_url)
+        .await
+        .expect(&format!(
+            "Failed to connect: {}",
+            &args.zmqpubrawblock_socket_url
+        ));
+
+    socket.subscribe("").await?;
+
+    // prep output file
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&args.output)?;
+    file.seek(std::io::SeekFrom::End(0))?;
+
+    let bitcoind_info = BitcoindRpcInfo::new()?;
+    
+    loop {
+        let zmq_message = socket.recv().await?;
+
+        let second_element = zmq_message.get(1);
+        match second_element {
+            Some(block_bytes) => {
+                let u8_byte_array = block_bytes.as_bytes();
+                let tx_count =
+                    process_block(u8_byte_array, &pb, &result_map, &tx_map, &header_map, false);
+                println!(
+                    "received block! byte length: {}; tx_count: {}",
+                    u8_byte_array.len(),
+                    tx_count
+                );
+
+                let h_map_entry = {
+                    let h_binding = header_map.read().unwrap();
+                    let (key, value) = h_binding.first_key_value().unwrap();
+                    (*key, *value)
+                };
+                let record = {
+                    let r_binding = result_map.read().unwrap();
+                    r_binding.first_key_value().unwrap().1.clone()
+                };
+                
+                
+                let block_aggregate = get_block_aggregate_output(&bitcoind_info, &h_map_entry, &record)?;
+                match zmq_state.db.persist_block_aggregates(&block_aggregate) {
+                    std::result::Result::Ok(_) => {},
+                    Err(e) => {
+                        eprintln!("Error persisting {}, error={}", block_aggregate.block_hash_big_endian, e);
+                    },
+                };
+                append_single_block_result_to_file(&file, &block_aggregate)?;
+
+                // Broadcast the new block aggregate
+                let _ = zmq_state.tx.send(block_aggregate);
+            }
+            None => panic!("second element from zeromq raw block is non-existent!"),
+        }
+    }
+}
+
 fn run_graph(_args: &GraphArgs) -> Result<()> {
     // TODO: Implement graph functionality
     println!("Graph functionality not yet implemented");
     Ok(())
+}
+
+
+fn generate_p2pk_tx(args: &GenerateP2PKTxArgs) -> Result<()> {
+    let to_amount = Amount::from_str(&args.output_amount_btc)?;
+    let e_master_key = &args.extended_master_private_key;
+    p2pktx::generate_p2pk_tx(e_master_key, to_amount)
 }
 
 fn append_single_block_result_to_file(

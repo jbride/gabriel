@@ -117,7 +117,7 @@ $ cargo test
 
 Gabriel uses the following environment variables:
 
-- API_SOCKET_URL
+- WEB_SOCKET_URL
   - set to a valid unix domain socket path to enable the HTTP API
   - defaults to: 127.0.0.1:3000
 - BITCOIND_RPC_URL

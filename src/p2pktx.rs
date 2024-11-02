@@ -37,7 +37,7 @@ pub fn generate_p2pk_tx(extended_master_private_key: &str, output_amount: Amount
     let p2pk_pubkey = PublicKey::new(secp256k1_pubkey);
     let output_amount_btc = output_amount.to_btc();
 
-    let bitcoind_info = BitcoindRpcInfo::new()?;
+    let bitcoind_info = BitcoindRpcInfo::new(1)?;
     let results: (
         ListUnspentResultEntry,
         GetAddressInfoResult,

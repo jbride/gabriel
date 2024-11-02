@@ -6,6 +6,7 @@ use bitcoin::{Address, Amount, BlockHash};
 use bitcoin::hashes::sha256d::Hash;
 use bitcoincore_rpc::json::{self, GetAddressInfoResult, ListUnspentResultEntry};
 use bitcoincore_rpc::{Auth, Client, RpcApi};
+use log::debug;
 use r2d2;
 
 /// bitcoincore_rpc::Client is not threadsafe, so we need to manage connections in an r2d2 pool
@@ -40,13 +41,14 @@ impl r2d2::ManageConnection for BitcoindConnectionManager {
 }
 
 impl BitcoindRpcInfo {
-    pub fn new() -> Result<Self> {
+    pub fn new(pool_size: u32) -> Result<Self> {
         let url = env::var("BITCOIND_RPC_URL")
             .map_err(|e| anyhow!("Missing BITCOIND_RPC_URL environment variable: {}", e))?;
         
         let auth = match env::var("BITCOIND_RPC_COOKIE_PATH") {
             Ok(cookiefile) => Auth::CookieFile(cookiefile.into()),
             Err(_) => {
+                eprintln!("BITCOIND_RPC_COOKIE_PATH not set, using BITCOIND_RPC_USER and BITCOIND_RPC_PASS");
                 let user = env::var("BITCOIND_RPC_USER")
                     .map_err(|e| anyhow!("Missing BITCOIND_RPC_USER environment variable: {}", e))?;
                 let pass = env::var("BITCOIND_RPC_PASS")
@@ -54,10 +56,10 @@ impl BitcoindRpcInfo {
                 Auth::UserPass(user, pass)
             }
         };
-
+        debug!("Creating BitcoindConnectionManager with url: {} ; pool size: {}", url, pool_size);
         let manager = BitcoindConnectionManager { url, auth };
         let pool = r2d2::Pool::builder()
-            .max_size(10) // Adjust pool size as needed
+            .max_size(pool_size) // Adjust pool size as needed
             .build(manager)
             .map_err(|e| anyhow!("Failed to create connection pool: {}", e))?;
 

@@ -12,11 +12,11 @@ pub struct SQLitePersistence {
 }
 
 impl SQLitePersistence {
-    pub fn new() -> anyhow::Result<(Self)> {
+    pub fn new(pool_max_size: u32) -> anyhow::Result<(Self)> {
         let sqlite_absolute_path = env::var("SQLITE_ABSOLUTE_PATH")
             .map_err(|e| anyhow::anyhow!("Missing SQLITE_ABSOLUTE_PATH environment variable: {}", e))?;
         let manager = SqliteConnectionManager::file(&sqlite_absolute_path);
-        let pool = r2d2::Pool::builder().max_size(15).build(manager)?;
+        let pool = r2d2::Pool::builder().max_size(pool_max_size).build(manager)?;
 
         let sql_conn = pool.get()?;
         sql_conn.execute(

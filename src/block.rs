@@ -45,8 +45,7 @@ pub struct Record {
     pub p2pk_sats_spent: u64,
 }
 
-
-#[derive(Clone,Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct BlockAggregateOutput {
     pub date: String,
     pub block_height: usize,

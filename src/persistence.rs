@@ -1,120 +1,118 @@
 use std::env;
 
 use log::debug;
-use r2d2::Pool;
-use r2d2_sqlite::SqliteConnectionManager;
+use sqlx::{Pool, Sqlite, Row};
+use sqlx::migrate::MigrateDatabase;
 
 use crate::block::BlockAggregateOutput;
 
 #[derive(Debug)]
 pub struct SQLitePersistence {
-    pool: Pool<SqliteConnectionManager>
+    pool: Pool<Sqlite>,
 }
 
 impl SQLitePersistence {
-    pub fn new(pool_max_size: u32) -> anyhow::Result<(Self)> {
+
+    pub async fn new(pool_max_size: u32) -> anyhow::Result<Self> {
         let sqlite_absolute_path = env::var("SQLITE_ABSOLUTE_PATH")
             .map_err(|e| anyhow::anyhow!("Missing SQLITE_ABSOLUTE_PATH environment variable: {}", e))?;
-        let manager = SqliteConnectionManager::file(&sqlite_absolute_path);
-        let pool = r2d2::Pool::builder().max_size(pool_max_size).build(manager)?;
 
-        let sql_conn = pool.get()?;
-        sql_conn.execute(
-            "create table if not exists p2pk_utxo_block_aggregates (
-                 block_height integer not null,
-                 block_hash_big_endian text primary key,
-                 date text not null,
-                 total_p2pk_addresses integer not null,
-                 total_p2pk_value real not null
-             )",
-            [],
-        )?;
-        debug!(
-            "p2pk_utxo_block_aggregates: table now exists at: {}",
-            sqlite_absolute_path
-        );
-
-        Ok(SQLitePersistence {
-            pool
-        })
-    }
-
-    pub fn persist_block_aggregates(&self, block_aggregate: &BlockAggregateOutput) -> anyhow::Result<(usize)> {
+        if !sqlx::Sqlite::database_exists(&sqlite_absolute_path).await? {
+            sqlx::Sqlite::create_database(&sqlite_absolute_path).await?;
+        }
         
-        let sql = "INSERT INTO p2pk_utxo_block_aggregates VALUES(?1,?2,?3,?4,?5)";
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(pool_max_size)
+            .connect(&format!("sqlite:{}", sqlite_absolute_path))
+            .await?;
 
-        let sql_conn = self.pool.get().unwrap();
-        let db_exec_results = sql_conn.execute(sql, [
-            block_aggregate.block_height.to_string(),
-            block_aggregate.block_hash_big_endian.clone(),
-            block_aggregate.date.clone(),
-            block_aggregate.total_p2pk_addresses.to_string(),
-            block_aggregate.total_p2pk_value.to_string()
-        ])?;
+        debug!("SQLite database pool created at {} with size {}", sqlite_absolute_path, pool_max_size);
 
-        Ok(db_exec_results)
+        // Create table if not exists
+        sqlx::query(
+            "create table if not exists p2pk_utxo_block_aggregates (
+                block_height integer not null,
+                block_hash_big_endian text primary key,
+                date text not null,
+                total_p2pk_addresses integer not null,
+                total_p2pk_value real not null
+            )"
+        )
+        .execute(&pool)
+        .await?;
+
+        Ok(SQLitePersistence { pool })
     }
 
-    pub fn get_total_aggregates(&self) -> anyhow::Result<(i64, f64)> {
-        let sql_conn = self.pool.get().unwrap();
-        let mut stmt = sql_conn.prepare(
+    pub async fn persist_block_aggregates(
+        &self,
+        block_aggregate: &BlockAggregateOutput,
+    ) -> anyhow::Result<u64> {
+        let result = sqlx::query(
+            "INSERT INTO p2pk_utxo_block_aggregates VALUES(?1,?2,?3,?4,?5)"
+        )
+        .bind(block_aggregate.block_height as i64)
+        .bind(&block_aggregate.block_hash_big_endian)
+        .bind(&block_aggregate.date)
+        .bind(block_aggregate.total_p2pk_addresses as i64)
+        .bind(block_aggregate.total_p2pk_value)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    pub async fn get_total_aggregates(&self) -> anyhow::Result<(i64, f64)> {
+        let result = sqlx::query(
             "SELECT SUM(total_p2pk_addresses) as total_count, 
              SUM(total_p2pk_value) as total_value 
              FROM p2pk_utxo_block_aggregates"
-        )?;
-        
-        let (count, value) = stmt.query_row([], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?;
-        
-        Ok((count, value))
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok((result.get::<i64, _>(0), result.get::<f64, _>(1)))
     }
 
-    pub fn get_block_by_hash(&self, hash: &str) -> anyhow::Result<Option<BlockAggregateOutput>> {
-        let sql_conn = self.pool.get().unwrap();
-        let mut stmt = sql_conn.prepare(
+    pub async fn get_block_by_hash(&self, hash: &str) -> anyhow::Result<Option<BlockAggregateOutput>> {
+        let result = sqlx::query(
             "SELECT date, block_height, block_hash_big_endian, total_p2pk_addresses, total_p2pk_value 
              FROM p2pk_utxo_block_aggregates WHERE block_hash_big_endian = ?"
-        )?;
-        
-        let result = stmt.query_row([hash], |row| {
-            Ok(BlockAggregateOutput {
-                date: row.get(0)?,
-                block_height: row.get(1)?,
-                block_hash_big_endian: row.get(2)?,
-                total_p2pk_addresses: row.get(3)?,
-                total_p2pk_value: row.get(4)?,
-            })
-        });
-        
+        )
+        .bind(hash)
+        .fetch_optional(&self.pool)
+        .await?;
+
         match result {
-            Ok(block) => Ok(Some(block)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
+            Some(row) => Ok(Some(BlockAggregateOutput {
+                date: row.get(0),
+                block_height: row.get::<i64, _>(1) as usize,
+                block_hash_big_endian: row.get(2),
+                total_p2pk_addresses: row.get::<i64, _>(3) as u32,
+                total_p2pk_value: row.get::<f64, _>(4),
+            })),
+            None => Ok(None),
         }
     }
 
-    pub fn get_block_by_height(&self, height: i64) -> anyhow::Result<Option<BlockAggregateOutput>> {
-        let sql_conn = self.pool.get().unwrap();
-        let mut stmt = sql_conn.prepare(
+    pub async fn get_block_by_height(&self, height: i64) -> anyhow::Result<Option<BlockAggregateOutput>> {
+        let result = sqlx::query(
             "SELECT date, block_height, block_hash_big_endian, total_p2pk_addresses, total_p2pk_value 
              FROM p2pk_utxo_block_aggregates WHERE block_height = ?"
-        )?;
-        
-        let result = stmt.query_row([height], |row| {
-            Ok(BlockAggregateOutput {
-                date: row.get(0)?,
-                block_height: row.get(1)?,
-                block_hash_big_endian: row.get(2)?,
-                total_p2pk_addresses: row.get(3)?,
-                total_p2pk_value: row.get(4)?,
-            })
-        });
-        
+        )
+        .bind(height)
+        .fetch_optional(&self.pool)
+        .await?;
+
         match result {
-            Ok(block) => Ok(Some(block)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
+            Some(row) => Ok(Some(BlockAggregateOutput {
+                date: row.get(0),
+                block_height: row.get::<i64, _>(1) as usize,
+                block_hash_big_endian: row.get(2),
+                total_p2pk_addresses: row.get(3),
+                total_p2pk_value: row.get(4),
+            })),
+            None => Ok(None),
         }
     }
 }

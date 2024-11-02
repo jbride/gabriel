@@ -8,7 +8,7 @@ gabriel
       - [2.1.2.1. Rust](#2121-rust)
       - [2.1.2.2. bitcoind](#2122-bitcoind)
       - [2.1.2.3. SQLite client](#2123-sqlite-client)
-  - [2.2. Clone](#22-clone)
+  - [2.2. Clone Gabriel](#22-clone-gabriel)
   - [2.3. Build](#23-build)
   - [2.4. Execute tests](#24-execute-tests)
 - [3. Run Gabriel](#3-run-gabriel)
@@ -83,9 +83,13 @@ If on bitcoind v28.0, ensure the following flag is set prior to initial block do
 ##### 2.1.2.3. SQLite client
 
 Gabriel persists P2PK utxo analysis to a local SQLite database.
-If you would like to view that data, you'll want to download and install the  [SQLite client](https://sqlite.org/download.html) for your operating system.
+You will need to download and install the  [SQLite client](https://sqlite.org/download.html) for your operating system.
 
-### 2.2. Clone
+Once installed, set the SQLITE_ABSOLUTE_PATH environment variable to the path of the SQLite database:
+
+        $ export SQLITE_ABSOLUTE_PATH=/path/to/gabriel_p2pk.db
+      
+### 2.2. Clone Gabriel
 
 You'll need the Gabriel source code:
 
@@ -126,10 +130,6 @@ For all operations, Gabriel uses the following environment variables:
 - SQLITE_ABSOLUTE_PATH
 
 Optional:
-- WRITE_OUTPUT_TO_FILE
-  - set to 1 to optionally write output to a file
-  - default is not to write to a file
-  - If writing to a file, the output filename is controlled by the OUTPUT_FILE_PATH environment variable
 - RUST_LOG
   - set to a valid value (ie: "info", "debug", "error", etc) to override default logging level
 - RUST_BACKTRACE

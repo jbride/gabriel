@@ -1,12 +1,17 @@
+mod api;
 mod bitcoind_rpc;
 mod block;
 mod p2pktx;
 mod persistence;
 mod tx;
-mod api;
 
 use std::{
-    env, fs::OpenOptions, io::{Seek, Write}, path::PathBuf, str::FromStr, sync::Arc
+    env,
+    fs::OpenOptions,
+    io::{Seek, Write},
+    path::PathBuf,
+    str::FromStr,
+    sync::Arc,
 };
 
 use anyhow::{Ok, Result};
@@ -21,14 +26,12 @@ use nom::AsBytes;
 use tokio::sync::broadcast;
 use zeromq::{Socket, SocketRecv};
 
-
 use block::{HeaderMap, ResultMap, TxMap};
 use indicatif::ProgressBar;
 
 use axum::routing::get;
 use std::net::SocketAddr;
 use tower_http::services::ServeDir;
-
 
 const HEADER: &str = "Height,Block Hash,Date,Total P2PK addresses,Total P2PK coins\n";
 
@@ -59,7 +62,7 @@ struct GenerateP2PKTxArgs {
 struct BlockFileEvalArgs {
     /// Bitcoin directory path
     #[arg(short, long)]
-    block_file_absolute_path: PathBuf
+    block_file_absolute_path: PathBuf,
 }
 
 #[derive(Parser, Debug)]
@@ -78,28 +81,27 @@ struct GraphArgs {
     // Add arguments for the graph command if needed
 }
 
-
 /*
-    Using Tokio runtime to support the following async functions:
-    - Asynchronous web server operations (Axum)
-    - Asynchronous ZeroMQ socket operations
-    - Concurrent processing of blocks
-    - Broadcast of new blocks to Server Sent Events (SSE) stream
- */
+   Using Tokio runtime to support the following async functions:
+   - Asynchronous web server operations (Axum)
+   - Asynchronous ZeroMQ socket operations
+   - Asynchronous SQLite persistence operations
+   - Concurrent processing of blocks
+   - Async broadcast of new blocks to Server Sent Events (SSE) stream
+*/
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
-        Commands::SingleBlockFileEval(args) => run_block_file_eval(args),
+        Commands::SingleBlockFileEval(args) => run_single_block_file_eval(args).await,
         Commands::Index(args) => run_index(args),
         Commands::BlockAsyncEvalAndWebApp => evaluate_async_blocks_and_run_web_app().await,
         Commands::GenerateP2PKTx(args) => generate_p2pk_tx(args),
     }
 }
 
-
-fn run_block_file_eval(args: &BlockFileEvalArgs) -> Result<()> {
+async fn run_single_block_file_eval(args: &BlockFileEvalArgs) -> Result<()> {
     // Maps previous block hash to next merkle root
     let header_map: HeaderMap = Default::default();
 
@@ -127,7 +129,7 @@ fn run_block_file_eval(args: &BlockFileEvalArgs) -> Result<()> {
     }
 
     let bitcoind_info = BitcoindRpcInfo::new(1)?;
-    let sqlite_persistence = persistence::SQLitePersistence::new(1)?;
+    let sqlite_persistence = persistence::SQLitePersistence::new(1).await?;
 
     let h_binding = header_map.read().unwrap();
     let mut header_map_iter = h_binding.iter();
@@ -136,19 +138,24 @@ fn run_block_file_eval(args: &BlockFileEvalArgs) -> Result<()> {
             let r_binding = result_map.read().unwrap();
             r_binding.get(h_map_entry.1).cloned()
         };
-        
+
         let h_map_entry = (*h_map_entry.0, *h_map_entry.1);
-        let block_aggregate = get_block_aggregate_output(&bitcoind_info, &h_map_entry, &record.unwrap())?;
-        match sqlite_persistence.persist_block_aggregates(&block_aggregate){
-            std::result::Result::Ok(_) => {},
+        let block_aggregate =
+            get_block_aggregate_output(&bitcoind_info, &h_map_entry, &record.unwrap())?;
+        match sqlite_persistence.persist_block_aggregates(&block_aggregate).await {
+            std::result::Result::Ok(_) => {}
             Err(e) => {
-                eprintln!("Error persisting {}, error={}", block_aggregate.block_hash_big_endian, e);
-            },
+                eprintln!(
+                    "Error persisting {}, error={}",
+                    block_aggregate.block_hash_big_endian, e
+                );
+            }
         }
     }
     Ok(())
 }
 
+// TO-DO: Consider writing anaylsis of each block immediately to sqlite (rather than populating in-memory maps)
 fn run_index(args: &IndexArgs) -> Result<()> {
     // Maps previous block hash to next merkle root
     let header_map: HeaderMap = Default::default();
@@ -213,15 +220,14 @@ fn run_index(args: &IndexArgs) -> Result<()> {
     Ok(())
 }
 
-
 /*
  * This function evaluates blocks from Bitcoind ZMQ socket and broadcasts the results
  * to the Server Sent Events (SSE) stream.
  */
 async fn evaluate_async_blocks_and_run_web_app() -> Result<()> {
-    let zmq_socket_url = env::var("ZMQ_SOCKET_URL")
-        .expect("ZMQ_SOCKET_URL environment variable must be set");
-    
+    let zmq_socket_url =
+        env::var("ZMQ_SOCKET_URL").expect("ZMQ_SOCKET_URL environment variable must be set");
+
     println!("zmqpubrawblock_socket_url: {}", &zmq_socket_url);
 
     // Maps previous block hash to next merkle root
@@ -238,21 +244,16 @@ async fn evaluate_async_blocks_and_run_web_app() -> Result<()> {
     socket
         .connect(&zmq_socket_url)
         .await
-        .expect(&format!(
-            "Failed to connect: {}",
-            &zmq_socket_url
-        ));
+        .expect(&format!("Failed to connect: {}", &zmq_socket_url));
     socket.subscribe("").await?;
 
-
     let bitcoind_info = BitcoindRpcInfo::new(1)?;
-    let sqlite_persistence = persistence::SQLitePersistence::new(1)?;
+    let sqlite_persistence = persistence::SQLitePersistence::new(1).await?;
 
-    // Create a broadcast channel for SSE events and start the API server   
+    // Create a broadcast channel for SSE events and start the API server
     let (tx, _rx) = broadcast::channel(100);
-    run_apis_and_web_app(tx.clone())?;
+    run_apis_and_web_app(tx.clone()).await?;
 
-    
     loop {
         let zmq_message = socket.recv().await?;
 
@@ -277,14 +278,17 @@ async fn evaluate_async_blocks_and_run_web_app() -> Result<()> {
                     let r_binding = result_map.read().unwrap();
                     r_binding.first_key_value().unwrap().1.clone()
                 };
-                
-                
-                let block_aggregate = get_block_aggregate_output(&bitcoind_info, &h_map_entry, &record)?;
-                match sqlite_persistence.persist_block_aggregates(&block_aggregate) {
-                    std::result::Result::Ok(_) => {},
+
+                let block_aggregate =
+                    get_block_aggregate_output(&bitcoind_info, &h_map_entry, &record)?;
+                match sqlite_persistence.persist_block_aggregates(&block_aggregate).await {
+                    std::result::Result::Ok(_) => {}
                     Err(e) => {
-                        eprintln!("Error persisting {}, error={}", block_aggregate.block_hash_big_endian, e);
-                    },
+                        eprintln!(
+                            "Error persisting {}, error={}",
+                            block_aggregate.block_hash_big_endian, e
+                        );
+                    }
                 };
 
                 // Broadcast the new block aggregate
@@ -295,14 +299,13 @@ async fn evaluate_async_blocks_and_run_web_app() -> Result<()> {
     }
 }
 
-fn run_apis_and_web_app(tx: broadcast::Sender<BlockAggregateOutput>) -> Result<()> {
-
+async fn run_apis_and_web_app(tx: broadcast::Sender<BlockAggregateOutput>) -> Result<()> {
     // Create a SQLite persistence instance with a connection pool
-    let sqlite_persistence = persistence::SQLitePersistence::new(5)?;
+    let sqlite_persistence = persistence::SQLitePersistence::new(5).await?;
 
-    let app_state = Arc::new(AppState { 
+    let app_state = Arc::new(AppState {
         db: sqlite_persistence,
-        tx: tx
+        tx: tx,
     });
 
     // Define routes for REST API, SSE stream, and React frontend
@@ -320,7 +323,7 @@ fn run_apis_and_web_app(tx: broadcast::Sender<BlockAggregateOutput>) -> Result<(
         .parse()
         .expect("Failed to parse API_ADDR");
     println!("REST API listening on {}", web_addr);
-    
+
     // Spawn the web app server in the background
     tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(web_addr).await.unwrap();
@@ -331,7 +334,6 @@ fn run_apis_and_web_app(tx: broadcast::Sender<BlockAggregateOutput>) -> Result<(
 
     Ok(())
 }
-
 
 fn generate_p2pk_tx(args: &GenerateP2PKTxArgs) -> Result<()> {
     let to_amount = Amount::from_str(&args.output_amount_btc)?;

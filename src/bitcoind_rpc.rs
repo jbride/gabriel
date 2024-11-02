@@ -44,19 +44,24 @@ impl BitcoindRpcInfo {
     pub fn new(pool_size: u32) -> Result<Self> {
         let url = env::var("BITCOIND_RPC_URL")
             .map_err(|e| anyhow!("Missing BITCOIND_RPC_URL environment variable: {}", e))?;
-        
+
         let auth = match env::var("BITCOIND_RPC_COOKIE_PATH") {
             Ok(cookiefile) => Auth::CookieFile(cookiefile.into()),
             Err(_) => {
                 eprintln!("BITCOIND_RPC_COOKIE_PATH not set, using BITCOIND_RPC_USER and BITCOIND_RPC_PASS");
-                let user = env::var("BITCOIND_RPC_USER")
-                    .map_err(|e| anyhow!("Missing BITCOIND_RPC_USER environment variable: {}", e))?;
-                let pass = env::var("BITCOIND_RPC_PASS")
-                    .map_err(|e| anyhow!("Missing BITCOIND_RPC_PASS environment variable: {}", e))?;
+                let user = env::var("BITCOIND_RPC_USER").map_err(|e| {
+                    anyhow!("Missing BITCOIND_RPC_USER environment variable: {}", e)
+                })?;
+                let pass = env::var("BITCOIND_RPC_PASS").map_err(|e| {
+                    anyhow!("Missing BITCOIND_RPC_PASS environment variable: {}", e)
+                })?;
                 Auth::UserPass(user, pass)
             }
         };
-        debug!("Creating BitcoindConnectionManager with url: {} ; pool size: {}", url, pool_size);
+        debug!(
+            "Creating BitcoindConnectionManager with url: {} ; pool size: {}",
+            url, pool_size
+        );
         let manager = BitcoindConnectionManager { url, auth };
         let pool = r2d2::Pool::builder()
             .max_size(pool_size) // Adjust pool size as needed
@@ -69,15 +74,26 @@ impl BitcoindRpcInfo {
     pub fn get_bitcoind_info_for_test_p2pk(
         &self,
         output_amount_btc: f64,
-    ) -> Result<(ListUnspentResultEntry, GetAddressInfoResult, Address, Amount)> {
+    ) -> Result<(
+        ListUnspentResultEntry,
+        GetAddressInfoResult,
+        Address,
+        Amount,
+    )> {
         // Get network relay fee
-        let network_relay_fee = self.rpc_pool.get()?.get_network_info()
+        let network_relay_fee = self
+            .rpc_pool
+            .get()?
+            .get_network_info()
             .map_err(|e| anyhow!("Failed to get network info: {}", e))?
             .relay_fee;
         let output_tx_total = network_relay_fee.to_btc() + output_amount_btc;
 
         // Find suitable UTXO
-        let unspent_vec = self.rpc_pool.get()?.list_unspent(Some(3), None, None, None, None)
+        let unspent_vec = self
+            .rpc_pool
+            .get()?
+            .list_unspent(Some(3), None, None, None, None)
             .map_err(|e| anyhow!("Failed to list unspent transactions: {}", e))?;
 
         let unspent_tx = unspent_vec
@@ -86,21 +102,35 @@ impl BitcoindRpcInfo {
             .ok_or_else(|| anyhow!("No unspent txs have sufficient funds: {}", output_tx_total))?;
 
         // Get input UTXO address info
-        let input_utxo_address = unspent_tx.address.clone()
+        let input_utxo_address = unspent_tx
+            .address
+            .clone()
             .ok_or_else(|| anyhow!("UTXO has no address"))?
             .assume_checked();
-        
-        let input_utxo_address_info = self.rpc_pool.get()?.get_address_info(&input_utxo_address)
+
+        let input_utxo_address_info = self
+            .rpc_pool
+            .get()?
+            .get_address_info(&input_utxo_address)
             .map_err(|e| anyhow!("Failed to get address info: {}", e))?;
 
         // Get change address
-        let change_addr = self.rpc_pool.get()?.get_raw_change_address(Some(json::AddressType::Bech32))
+        let change_addr = self
+            .rpc_pool
+            .get()?
+            .get_raw_change_address(Some(json::AddressType::Bech32))
             .map_err(|e| anyhow!("Failed to get change address: {}", e))?
             .assume_checked();
 
-        Ok((unspent_tx, input_utxo_address_info, change_addr, network_relay_fee))
+        Ok((
+            unspent_tx,
+            input_utxo_address_info,
+            change_addr,
+            network_relay_fee,
+        ))
     }
 
+    /// Get block height as indexed by Bitcoin Core
     pub fn get_block_height(&self, sha256d_hash: &Hash) -> Result<usize> {
         let hash = BlockHash::from_raw_hash(*sha256d_hash);
         let block_header = self.rpc_pool.get()?.get_block_header_info(&hash)?;

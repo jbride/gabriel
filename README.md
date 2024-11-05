@@ -47,7 +47,8 @@ The best way to install Rust is to use [rustup](https://rustup.rs).
 Gabriel requires a fully synced Bitcoin Core daemon to be running.
 For testing and development purposes, running Bitcoin Core on _regtest_ is sufficient.
 
-If on bitcoind v28.0, ensure the following flag is set prior to initial block download:  `-blocksxor=0`
+If on bitcoind v28.0, you will need to make note of the following flag set prior to initial block download:  `-blocksxor=0`.
+If -blocksxor=1 is set, then when starting Gabriel (discussed below), you will need to provide a valid 8-byte XOR key via the `BLOCK_XOR_KEY_FILE_PATH environment variable.
 
 1. Start Bitcoin Core:
    The following example starts Bitcoin Core in _regtest_ mode.
@@ -130,6 +131,8 @@ For all operations, Gabriel uses the following environment variables:
 - SQLITE_ABSOLUTE_PATH
 
 Optional:
+- BLOCK_XOR_KEY_FILE_PATH
+  - path to a file containing an 8-byte XOR key (if bitcoind was started with `-blocksxor=0`)
 - RUST_LOG
   - set to a valid value (ie: "info", "debug", "error", etc) to override default logging level
 - RUST_BACKTRACE

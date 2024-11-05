@@ -386,6 +386,45 @@ fn parse_witness(input: &[u8]) -> IResult<&[u8], Vec<WitnessItem>> {
     Ok((remaining, witness_items))
 }
 
+pub fn xor_block_decode(block_bytes: &[u8], xor_key: &XorKey) -> anyhow::Result<Vec<u8>> {
+    match xor_key.x_or_key {
+        Some(key) => {
+            let decoded_byte_array: Vec<u8> = block_bytes
+                .iter()
+                .enumerate()
+                .map(|(i, byte)| byte ^ key[i % key.len()])
+                .collect();
+            Ok(decoded_byte_array)
+        }
+        None => Ok(block_bytes.to_vec()), // Return original bytes if no XOR key
+    }
+}
+
+pub struct XorKey {
+    pub x_or_key: Option<[u8; 8]>,
+}
+
+pub fn get_xor_key(xor_key_path: Option<&str>) -> anyhow::Result<XorKey> {
+    match xor_key_path {
+        Some(path) => {
+            let mut file =
+                File::open(path).expect(&format!("Failed to open XOR key file: {}", path));
+            let mut buffer = [0u8; 8];
+            file.read_exact(&mut buffer)
+                .expect(&format!("Failed to read XOR key from file: {}", path));
+            println!(
+                "XOR key read from file: {} ; byte length = {:?}",
+                path,
+                buffer.len()
+            );
+            Ok(XorKey {
+                x_or_key: Some(buffer),
+            })
+        }
+        None => Ok(XorKey { x_or_key: None }),
+    }
+}
+
 /// Parse the block size and return the size in bytes
 fn parse_block_size(input: &[u8]) -> IResult<&[u8], u32> {
     le_u32(input)
@@ -483,10 +522,18 @@ pub fn process_block(
     tx_map: &TxMap,
     header_map: &HeaderMap,
     use_magic: bool,
+    xor_key: &Option<XorKey>,
 ) -> usize {
     let mut blocks_processed = 0;
+    let decoded_input = match xor_key {
+        Some(xor_key) => match xor_block_decode(input, xor_key) {
+            Ok(decoded) => decoded,
+            Err(_) => return 0,
+        },
+        None => input.to_vec(),
+    };
 
-    match parse_blk_file(input, use_magic) {
+    match parse_blk_file(&decoded_input, use_magic) {
         Ok((_, blocks)) => {
             for block in blocks {
                 let block_hash = compute_block_hash(&block.header);
@@ -571,13 +618,14 @@ pub fn process_block_file(
     result_map: &ResultMap,
     tx_map: &TxMap,
     header_map: &HeaderMap,
+    xor_key: &Option<XorKey>,
 ) -> usize {
     let mut file = File::open(path).expect("Failed to open block file");
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)
         .expect("Failed to read block file");
     // Process the blk file containing multiple blocks
-    process_block(&buffer, pb, result_map, tx_map, header_map, true)
+    process_block(&buffer, pb, result_map, tx_map, header_map, true, xor_key)
 }
 
 /// Iterate through the blocks directory and process each blkxxxxx.dat file in parallel
@@ -586,6 +634,7 @@ pub fn process_blocks_in_parallel(
     result_map: &ResultMap,
     tx_map: &TxMap,
     header_map: &HeaderMap,
+    xor_key: &Option<XorKey>,
 ) -> io::Result<()> {
     let mut blk_files: Vec<PathBuf> = vec![];
 
@@ -604,7 +653,8 @@ pub fn process_blocks_in_parallel(
 
     // Process each file in parallel using Rayon
     blk_files.par_iter().for_each(|path| {
-        let blocks_processed = process_block_file(path, &pb, result_map, tx_map, header_map);
+        let blocks_processed =
+            process_block_file(path, &pb, result_map, tx_map, header_map, xor_key);
 
         // Calculate ETA
         let eta_duration = pb.eta();

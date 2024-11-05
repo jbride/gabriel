@@ -1,8 +1,8 @@
 use std::env;
 
 use log::debug;
-use sqlx::{Pool, Sqlite, Row};
 use sqlx::migrate::MigrateDatabase;
+use sqlx::{Pool, Row, Sqlite};
 
 use crate::block::BlockAggregateOutput;
 
@@ -12,21 +12,24 @@ pub struct SQLitePersistence {
 }
 
 impl SQLitePersistence {
-
     pub async fn new(pool_max_size: u32) -> anyhow::Result<Self> {
-        let sqlite_absolute_path = env::var("SQLITE_ABSOLUTE_PATH")
-            .map_err(|e| anyhow::anyhow!("Missing SQLITE_ABSOLUTE_PATH environment variable: {}", e))?;
+        let sqlite_absolute_path = env::var("SQLITE_ABSOLUTE_PATH").map_err(|e| {
+            anyhow::anyhow!("Missing SQLITE_ABSOLUTE_PATH environment variable: {}", e)
+        })?;
 
         if !sqlx::Sqlite::database_exists(&sqlite_absolute_path).await? {
             sqlx::Sqlite::create_database(&sqlite_absolute_path).await?;
         }
-        
+
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(pool_max_size)
             .connect(&format!("sqlite:{}", sqlite_absolute_path))
             .await?;
 
-        debug!("SQLite database pool created at {} with size {}", sqlite_absolute_path, pool_max_size);
+        debug!(
+            "SQLite database pool created at {} with size {}",
+            sqlite_absolute_path, pool_max_size
+        );
 
         // Create table if not exists
         sqlx::query(
@@ -36,7 +39,7 @@ impl SQLitePersistence {
                 date text not null,
                 total_p2pk_addresses integer not null,
                 total_p2pk_value real not null
-            )"
+            )",
         )
         .execute(&pool)
         .await?;
@@ -48,16 +51,14 @@ impl SQLitePersistence {
         &self,
         block_aggregate: &BlockAggregateOutput,
     ) -> anyhow::Result<u64> {
-        let result = sqlx::query(
-            "INSERT INTO p2pk_utxo_block_aggregates VALUES(?1,?2,?3,?4,?5)"
-        )
-        .bind(block_aggregate.block_height as i64)
-        .bind(&block_aggregate.block_hash_big_endian)
-        .bind(&block_aggregate.date)
-        .bind(block_aggregate.total_p2pk_addresses as i64)
-        .bind(block_aggregate.total_p2pk_value)
-        .execute(&self.pool)
-        .await?;
+        let result = sqlx::query("INSERT INTO p2pk_utxo_block_aggregates VALUES(?1,?2,?3,?4,?5)")
+            .bind(block_aggregate.block_height as i64)
+            .bind(&block_aggregate.block_hash_big_endian)
+            .bind(&block_aggregate.date)
+            .bind(block_aggregate.total_p2pk_addresses as i64)
+            .bind(block_aggregate.total_p2pk_value)
+            .execute(&self.pool)
+            .await?;
 
         Ok(result.rows_affected())
     }
@@ -66,7 +67,7 @@ impl SQLitePersistence {
         let result = sqlx::query(
             "SELECT SUM(total_p2pk_addresses) as total_count, 
              SUM(total_p2pk_value) as total_value 
-             FROM p2pk_utxo_block_aggregates"
+             FROM p2pk_utxo_block_aggregates",
         )
         .fetch_one(&self.pool)
         .await?;
@@ -74,7 +75,10 @@ impl SQLitePersistence {
         Ok((result.get::<i64, _>(0), result.get::<f64, _>(1)))
     }
 
-    pub async fn get_block_by_hash(&self, hash: &str) -> anyhow::Result<Option<BlockAggregateOutput>> {
+    pub async fn get_block_by_hash(
+        &self,
+        hash: &str,
+    ) -> anyhow::Result<Option<BlockAggregateOutput>> {
         let result = sqlx::query(
             "SELECT date, block_height, block_hash_big_endian, total_p2pk_addresses, total_p2pk_value 
              FROM p2pk_utxo_block_aggregates WHERE block_hash_big_endian = ?"
@@ -95,7 +99,10 @@ impl SQLitePersistence {
         }
     }
 
-    pub async fn get_block_by_height(&self, height: i64) -> anyhow::Result<Option<BlockAggregateOutput>> {
+    pub async fn get_block_by_height(
+        &self,
+        height: i64,
+    ) -> anyhow::Result<Option<BlockAggregateOutput>> {
         let result = sqlx::query(
             "SELECT date, block_height, block_hash_big_endian, total_p2pk_addresses, total_p2pk_value 
              FROM p2pk_utxo_block_aggregates WHERE block_height = ?"

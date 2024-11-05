@@ -93,15 +93,24 @@ struct GraphArgs {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    let xor_key_path = env::var("BLOCK_XOR_KEY_FILE_PATH").ok();
+
     match &cli.command {
-        Commands::SingleBlockFileEval(args) => run_single_block_file_eval(args).await,
-        Commands::Index(args) => run_index(args),
-        Commands::BlockAsyncEvalAndWebApp => evaluate_async_blocks_and_run_web_app().await,
+        Commands::SingleBlockFileEval(args) => {
+            run_single_block_file_eval(args, &xor_key_path).await
+        }
+        Commands::Index(args) => run_index(args, &xor_key_path),
+        Commands::BlockAsyncEvalAndWebApp => {
+            evaluate_async_blocks_and_run_web_app(&xor_key_path).await
+        }
         Commands::GenerateP2PKTx(args) => generate_p2pk_tx(args),
     }
 }
 
-async fn run_single_block_file_eval(args: &BlockFileEvalArgs) -> Result<()> {
+async fn run_single_block_file_eval(
+    args: &BlockFileEvalArgs,
+    xor_key_path: &Option<String>,
+) -> Result<()> {
     // Maps previous block hash to next merkle root
     let header_map: HeaderMap = Default::default();
 
@@ -112,12 +121,19 @@ async fn run_single_block_file_eval(args: &BlockFileEvalArgs) -> Result<()> {
     let result_map: ResultMap = Default::default();
     let pb = ProgressBar::new(1);
 
+    let xor_key = if let Some(path) = xor_key_path {
+        Some(block::get_xor_key(Some(&path))?)
+    } else {
+        None
+    };
+
     let blocks_processed = process_block_file(
         &args.block_file_absolute_path,
         &pb,
         &result_map,
         &tx_map,
         &header_map,
+        &xor_key,
     );
     println!(
         "block_file_absolute_path: {} ;  blocks processed = {}",
@@ -142,7 +158,10 @@ async fn run_single_block_file_eval(args: &BlockFileEvalArgs) -> Result<()> {
         let h_map_entry = (*h_map_entry.0, *h_map_entry.1);
         let block_aggregate =
             get_block_aggregate_output(&bitcoind_info, &h_map_entry, &record.unwrap())?;
-        match sqlite_persistence.persist_block_aggregates(&block_aggregate).await {
+        match sqlite_persistence
+            .persist_block_aggregates(&block_aggregate)
+            .await
+        {
             std::result::Result::Ok(_) => {}
             Err(e) => {
                 eprintln!(
@@ -156,7 +175,7 @@ async fn run_single_block_file_eval(args: &BlockFileEvalArgs) -> Result<()> {
 }
 
 // TO-DO: Consider writing anaylsis of each block immediately to sqlite (rather than populating in-memory maps)
-fn run_index(args: &IndexArgs) -> Result<()> {
+fn run_index(args: &IndexArgs, xor_key_path: &Option<String>) -> Result<()> {
     // Maps previous block hash to next merkle root
     let header_map: HeaderMap = Default::default();
     // Maps txid to tx value
@@ -164,7 +183,15 @@ fn run_index(args: &IndexArgs) -> Result<()> {
     // Maps header hash to result Record
     let result_map: ResultMap = Default::default();
 
-    if let Err(e) = process_blocks_in_parallel(&args.input, &result_map, &tx_map, &header_map) {
+    let xor_key = if let Some(path) = xor_key_path {
+        Some(block::get_xor_key(Some(&path))?)
+    } else {
+        None
+    };
+
+    if let Err(e) =
+        process_blocks_in_parallel(&args.input, &result_map, &tx_map, &header_map, &xor_key)
+    {
         eprintln!("Failed to process blocks: {:?}", e);
     }
     let mut out: Vec<String> = vec![];
@@ -224,7 +251,7 @@ fn run_index(args: &IndexArgs) -> Result<()> {
  * This function evaluates blocks from Bitcoind ZMQ socket and broadcasts the results
  * to the Server Sent Events (SSE) stream.
  */
-async fn evaluate_async_blocks_and_run_web_app() -> Result<()> {
+async fn evaluate_async_blocks_and_run_web_app(xor_key_path: &Option<String>) -> Result<()> {
     let zmq_socket_url =
         env::var("ZMQ_SOCKET_URL").expect("ZMQ_SOCKET_URL environment variable must be set");
 
@@ -252,7 +279,14 @@ async fn evaluate_async_blocks_and_run_web_app() -> Result<()> {
 
     // Create a broadcast channel for SSE events and start the API server
     let (tx, _rx) = broadcast::channel(100);
+
     run_apis_and_web_app(tx.clone()).await?;
+
+    let xor_key = if let Some(path) = xor_key_path {
+        Some(block::get_xor_key(Some(&path))?)
+    } else {
+        None
+    };
 
     loop {
         let zmq_message = socket.recv().await?;
@@ -261,8 +295,15 @@ async fn evaluate_async_blocks_and_run_web_app() -> Result<()> {
         match second_element {
             Some(block_bytes) => {
                 let u8_byte_array = block_bytes.as_bytes();
-                let tx_count =
-                    process_block(u8_byte_array, &pb, &result_map, &tx_map, &header_map, false);
+                let tx_count = process_block(
+                    u8_byte_array,
+                    &pb,
+                    &result_map,
+                    &tx_map,
+                    &header_map,
+                    false,
+                    &xor_key,
+                );
                 println!(
                     "received block! byte length: {}; tx_count: {}",
                     u8_byte_array.len(),
@@ -281,7 +322,10 @@ async fn evaluate_async_blocks_and_run_web_app() -> Result<()> {
 
                 let block_aggregate =
                     get_block_aggregate_output(&bitcoind_info, &h_map_entry, &record)?;
-                match sqlite_persistence.persist_block_aggregates(&block_aggregate).await {
+                match sqlite_persistence
+                    .persist_block_aggregates(&block_aggregate)
+                    .await
+                {
                     std::result::Result::Ok(_) => {}
                     Err(e) => {
                         eprintln!(

@@ -21,6 +21,8 @@ use sha2::{Digest, Sha256};
 
 use crate::tx::{Transaction, TransactionInput, TransactionOutput, WitnessItem};
 
+pub const BLOCK_XOR_KEY_FILE_DEFAULT_NAME: &str = "xor.dat";
+
 #[derive(Debug)]
 pub struct BlockHeader {
     pub version: u32,
@@ -421,7 +423,10 @@ pub fn get_xor_key(xor_key_path: Option<&str>) -> anyhow::Result<XorKey> {
                 x_or_key: Some(buffer),
             })
         }
-        None => Ok(XorKey { x_or_key: None }),
+        None => {
+            println!("No XOR key file path provided.  Assuming no XOR key is used.");
+            Ok(XorKey { x_or_key: None })
+        }
     }
 }
 

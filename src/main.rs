@@ -7,7 +7,7 @@ mod tx;
 
 use std::{
     env,
-    fs::OpenOptions,
+    fs::{File, OpenOptions},
     io::{Seek, Write},
     path::PathBuf,
     str::FromStr,
@@ -93,7 +93,15 @@ struct GraphArgs {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let xor_key_path = env::var("BLOCK_XOR_KEY_FILE_PATH").ok();
+    let mut xor_key_path = env::var("BLOCK_XOR_KEY_FILE_PATH").ok();
+    if xor_key_path.is_none() {
+        if let std::result::Result::Ok(bitcoind_data_dir) = env::var("BITCOIND_DATA_DIR") {
+            let possible_xor_key_path = format!("{}/blocks/{}", bitcoind_data_dir, block::BLOCK_XOR_KEY_FILE_DEFAULT_NAME);
+            if File::open(&possible_xor_key_path).is_ok() {
+                xor_key_path = Some(possible_xor_key_path);
+            }
+        }
+    }
 
     match &cli.command {
         Commands::SingleBlockFileEval(args) => {
